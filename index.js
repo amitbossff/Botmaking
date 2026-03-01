@@ -15,20 +15,13 @@ const PORT = process.env.PORT || 3000;
 const ENCRYPTION_KEY = '12345678901234567890123456789012';
 const ENCRYPTION_IV = '1234567890123456';
 
-// MongoDB Schema with tParam
+// MongoDB Schema
 const linkSchema = new mongoose.Schema({
     chatId: Number,
     link: String,
     lifafaId: String,
-    referId: String,
-    tParam: String,  // Added for t parameter
-    status: { 
-        type: String, 
-        enum: ['pending', 'claimed', 'failed', 'expired'], 
-        default: 'pending' 
-    },
+    status: { type: String, default: 'pending' },
     amount: Number,
-    claimTime: Date,
     error: String,
     createdAt: { type: Date, default: Date.now, expires: '24h' }
 });
@@ -36,25 +29,10 @@ const linkSchema = new mongoose.Schema({
 const userSchema = new mongoose.Schema({
     chatId: { type: Number, unique: true },
     phoneNumber: String,
-    username: String,
-    firstName: String,
-    lastName: String,
     links: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Link' }],
     claimSession: {
         active: { type: Boolean, default: false },
-        startedAt: Date,
-        currentIndex: { type: Number, default: 0 },
-        totalLinks: { type: Number, default: 0 },
-        claimedLinks: { type: Number, default: 0 },
-        failedLinks: { type: Number, default: 0 },
-        totalAmount: { type: Number, default: 0 },
-        selectedCount: { type: Number, default: 0 },
-        unselectedCount: { type: Number, default: 0 }
-    },
-    stats: {
-        totalClaims: { type: Number, default: 0 },
-        totalAmount: { type: Number, default: 0 },
-        lastClaim: Date
+        currentIndex: { type: Number, default: 0 }
     }
 });
 
@@ -67,147 +45,217 @@ mongoose.connect(MONGODB_URI).then(() => console.log('✅ MongoDB Connected'));
 // Initialize Bot
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-// Encryption function
+// ========== EXACT ENCRYPTION FUNCTION ==========
 function encryptPayload(payload) {
     try {
-        const key = crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest('base64').substr(0, 32);
-        const iv = Buffer.from(ENCRYPTION_IV);
-        const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key), iv);
-        let encrypted = cipher.update(JSON.stringify(payload), 'utf8', 'base64');
-        encrypted += cipher.final('base64');
-        return encrypted;
+        // Exact same as original website
+        const key = CryptoJS.enc.Utf8.parse('12345678901234567890123456789012');
+        const iv = CryptoJS.enc.Utf8.parse('1234567890123456');
+        const jsonString = JSON.stringify(payload);
+        const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+        return encrypted.toString();
     } catch (e) {
+        console.error('Encryption error:', e);
         return '';
     }
 }
 
-// Main menu
-const mainMenu = {
-    reply_markup: {
-        inline_keyboard: [
-            [{ text: '📤 Send Links', callback_data: 'send_links' }],
-            [{ text: '📊 Status', callback_data: 'check_status' }],
-            [{ text: '📞 Set Phone', callback_data: 'set_phone' }],
-            [{ text: '🚀 Start Claim', callback_data: 'start_claim' }],
-            [{ text: '📈 Stats', callback_data: 'statistics' }]
-        ]
-    }
-};
-
-// Progress bar
-function createProgressBar(percent) {
-    const filled = Math.round(percent / 10);
-    return '█'.repeat(filled) + '░'.repeat(10 - filled);
-}
-
-// ========== CLAIM FUNCTION - WORKING VERSION ==========
-async function claimSingleLink(chatId, link) {
+// ========== MAIN CLAIM FUNCTION ==========
+async function claimLifafa(chatId, lifafaId, phoneNumber) {
     try {
-        const user = await User.findOne({ chatId });
-        
-        // Extract parameters
-        let lifafaId = link.lifafaId || 'LF88DEB2E6';
-        let tParam = link.tParam || '7412418424';
-        
-        // Prepare EXACT payload that works
+        // Step 1: Prepare payload EXACTLY like website
         const payload = {
             action: "claimlifafa",
             lid: lifafaId,
-            number: user.phoneNumber,
+            number: phoneNumber,
             accessCode: "",
             referid: "",
             selected: ""
         };
         
-        console.log('📤 Sending payload:', payload);
+        console.log('📤 Payload:', payload);
         
-        const encryptedPayload = encryptPayload(payload);
+        // Step 2: Encrypt payload
+        const encryptedData = encryptPayload(payload);
         
-        const params = new URLSearchParams();
-        params.append('data', encryptedPayload);
+        // Step 3: Send to handler
+        const formData = new URLSearchParams();
+        formData.append('data', encryptedData);
         
-        // Send to handler
-        const response = await axios.post('https://mahakalxlifafa.in/handler', params, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 15000
+        const response = await axios.post('https://mahakalxlifafa.in/handler', formData, {
+            headers: { 
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 10000
         });
         
         console.log('📥 Response:', response.data);
         
+        // Step 4: Parse response
         if (response.data && response.data.status === "success") {
-            const isWin = response.data.claim_status !== "tried";
-            const amount = isWin ? (response.data.perUser || 4) : 0;
+            const isSuccess = response.data.claim_status !== "tried";
+            const amount = isSuccess ? (response.data.perUser || 4) : 0;
             
             return {
-                success: isWin,
+                success: isSuccess,
                 amount: amount,
-                message: response.data.message || (isWin ? '✅ Success' : '❌ Already tried'),
-                data: response.data
+                message: response.data.message || (isSuccess ? '✅ Success' : '❌ Already tried'),
+                raw: response.data
             };
         }
         
         return { success: false, error: 'Invalid response', amount: 0 };
         
     } catch (error) {
-        console.error('Claim error:', error.message);
+        console.error('❌ Error:', error.message);
         return { success: false, error: error.message, amount: 0 };
     }
 }
 
-// Save link with t parameter
-async function saveLink(chatId, link) {
-    try {
-        let lifafaId = 'default';
-        let tParam = '';
-        
-        try {
-            const url = new URL(link);
-            lifafaId = url.searchParams.get('i') || 'default';
-            tParam = url.searchParams.get('t') || '';
-        } catch (e) {
-            const match = link.match(/[?&]i=([^&]+)/);
-            if (match) lifafaId = match[1];
-            const tMatch = link.match(/[?&]t=([^&]+)/);
-            if (tMatch) tParam = tMatch[1];
-        }
-        
-        const existingLink = await Link.findOne({ chatId, link });
-        if (existingLink) {
-            bot.sendMessage(chatId, '⚠️ Link already exists!');
-            return;
-        }
-        
-        const newLink = new Link({
-            chatId,
-            link,
-            lifafaId,
-            tParam,
-            status: 'pending'
-        });
-        
-        await newLink.save();
-        
+// ========== SIMPLE MENU ==========
+const mainMenu = {
+    reply_markup: {
+        keyboard: [
+            ['📤 Send Links', '📊 Status'],
+            ['📞 Set Phone', '🚀 Start Claim'],
+            ['📈 Stats']
+        ],
+        resize_keyboard: true
+    }
+};
+
+// ========== START COMMAND ==========
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    await User.findOneAndUpdate(
+        { chatId },
+        { username: msg.from.username },
+        { upsert: true }
+    );
+    
+    bot.sendMessage(chatId,
+        `🎁 *Lifafa Auto-Claim Bot*\n\n` +
+        `1️⃣ Send your lifafa links\n` +
+        `2️⃣ Set your 10-digit phone number\n` +
+        `3️⃣ Click Start Claim\n\n` +
+        `⏱️ 30 sec delay between claims`,
+        { parse_mode: 'Markdown', ...mainMenu }
+    );
+});
+
+// ========== HANDLE MESSAGES ==========
+bot.on('message', async (msg) => {
+    if (!msg.text || msg.text.startsWith('/')) return;
+    
+    const chatId = msg.chat.id;
+    const text = msg.text;
+    
+    // Menu buttons
+    if (text === '📤 Send Links') {
+        bot.sendMessage(chatId, 'Send your lifafa links (one or multiple)');
+        return;
+    }
+    
+    if (text === '📊 Status') {
+        await showStatus(chatId);
+        return;
+    }
+    
+    if (text === '📞 Set Phone') {
+        bot.sendMessage(chatId, 'Send your 10-digit phone number');
+        return;
+    }
+    
+    if (text === '🚀 Start Claim') {
+        await startClaiming(chatId);
+        return;
+    }
+    
+    if (text === '📈 Stats') {
+        await showStats(chatId);
+        return;
+    }
+    
+    // Phone number
+    if (/^\d{10}$/.test(text)) {
         await User.findOneAndUpdate(
             { chatId },
-            { $push: { links: newLink._id } },
+            { phoneNumber: text },
             { upsert: true }
         );
+        bot.sendMessage(chatId, `✅ Phone saved: ${text}`, mainMenu);
+        return;
+    }
+    
+    // Links
+    if (text.includes('lifafa') || text.includes('http')) {
+        await saveLinks(chatId, text);
+        return;
+    }
+    
+    bot.sendMessage(chatId, '❌ Send link or phone number');
+});
+
+// ========== SAVE LINKS FUNCTION ==========
+async function saveLinks(chatId, text) {
+    try {
+        // Split multiple links
+        const links = text.split('\n').filter(l => l.trim());
+        let saved = 0;
+        let duplicates = 0;
+        
+        for (const link of links) {
+            // Extract lifafa ID
+            let lifafaId = 'default';
+            const match = link.match(/[?&]i=([^&]+)/);
+            if (match) lifafaId = match[1];
+            
+            // Check duplicate
+            const exists = await Link.findOne({ chatId, link });
+            if (exists) {
+                duplicates++;
+                continue;
+            }
+            
+            // Save
+            const newLink = new Link({
+                chatId,
+                link: link.trim(),
+                lifafaId,
+                status: 'pending'
+            });
+            
+            await newLink.save();
+            
+            await User.findOneAndUpdate(
+                { chatId },
+                { $push: { links: newLink._id } },
+                { upsert: true }
+            );
+            
+            saved++;
+        }
         
         const total = await Link.countDocuments({ chatId });
-        bot.sendMessage(chatId, `✅ Link saved! Total: ${total}`, mainMenu);
+        bot.sendMessage(chatId, 
+            `✅ Saved: ${saved} new\n` +
+            `🔄 Duplicate: ${duplicates}\n` +
+            `📚 Total: ${total}`,
+            mainMenu
+        );
         
     } catch (error) {
-        bot.sendMessage(chatId, '❌ Error saving link');
+        bot.sendMessage(chatId, '❌ Error saving links');
     }
 }
 
-// Save phone number
-async function savePhoneNumber(chatId, phone) {
-    await User.findOneAndUpdate({ chatId }, { phoneNumber: phone }, { upsert: true });
-    bot.sendMessage(chatId, `✅ Phone saved: ${phone}`, mainMenu);
-}
-
-// Show status
+// ========== SHOW STATUS ==========
 async function showStatus(chatId) {
     const links = await Link.find({ chatId });
     const user = await User.findOne({ chatId });
@@ -222,19 +270,37 @@ async function showStatus(chatId) {
     const failed = links.filter(l => l.status === 'failed').length;
     const totalAmount = links.reduce((sum, l) => sum + (l.amount || 0), 0);
     
-    const msg = `📊 *Status*\n\n` +
+    bot.sendMessage(chatId,
+        `📊 *Status*\n\n` +
         `Total: ${links.length}\n` +
         `⏳ Pending: ${pending}\n` +
         `✅ Claimed: ${claimed}\n` +
         `❌ Failed: ${failed}\n` +
         `💰 Amount: ₹${totalAmount}\n` +
-        `📞 Phone: ${user?.phoneNumber || 'Not set'}`;
-    
-    bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', ...mainMenu });
+        `📞 Phone: ${user?.phoneNumber || 'Not set'}`,
+        { parse_mode: 'Markdown', ...mainMenu }
+    );
 }
 
-// Start claim process
-async function startClaimProcess(chatId) {
+// ========== SHOW STATS ==========
+async function showStats(chatId) {
+    const links = await Link.find({ chatId });
+    
+    const claimed = links.filter(l => l.status === 'claimed').length;
+    const totalAmount = links.reduce((sum, l) => sum + (l.amount || 0), 0);
+    const selected = links.filter(l => l.amount > 0).length;
+    
+    bot.sendMessage(chatId,
+        `📈 *Statistics*\n\n` +
+        `Total Claims: ${claimed}\n` +
+        `Selected: ${selected}\n` +
+        `Total Amount: ₹${totalAmount}`,
+        { parse_mode: 'Markdown', ...mainMenu }
+    );
+}
+
+// ========== START CLAIMING ==========
+async function startClaiming(chatId) {
     const user = await User.findOne({ chatId });
     const links = await Link.find({ chatId, status: 'pending' });
     
@@ -248,166 +314,62 @@ async function startClaimProcess(chatId) {
         return;
     }
     
+    // Start session
     await User.findOneAndUpdate(
         { chatId },
         {
             'claimSession.active': true,
-            'claimSession.startedAt': new Date(),
-            'claimSession.currentIndex': 0,
-            'claimSession.totalLinks': links.length
+            'claimSession.currentIndex': 0
         }
     );
     
     bot.sendMessage(chatId, `🚀 Starting claim for ${links.length} links...`);
-    processNextLink(chatId, 0);
+    processNext(chatId, 0);
 }
 
-// Process next link
-async function processNextLink(chatId, index) {
+// ========== PROCESS NEXT LINK ==========
+async function processNext(chatId, index) {
     const user = await User.findOne({ chatId });
     if (!user?.claimSession?.active) return;
     
     const links = await Link.find({ chatId, status: 'pending' });
+    
     if (index >= links.length) {
         await User.findOneAndUpdate({ chatId }, { 'claimSession.active': false });
-        const stats = await getFinalStats(chatId);
-        bot.sendMessage(chatId, `✅ *Complete!*\n${stats}`, { parse_mode: 'Markdown', ...mainMenu });
+        bot.sendMessage(chatId, '✅ All links processed!', mainMenu);
         return;
     }
     
     const link = links[index];
     
     // Show progress
-    const progress = createProgressBar((index / links.length) * 100);
-    bot.sendMessage(chatId, 
-        `🔄 *${index+1}/${links.length}*\n${progress}\nTrying: ${link.lifafaId}`
-    );
+    bot.sendMessage(chatId, `🔄 *${index+1}/${links.length}*\nTrying: ${link.lifafaId}`);
     
     // Claim
-    const result = await claimSingleLink(chatId, link);
+    const result = await claimLifafa(chatId, link.lifafaId, user.phoneNumber);
     
     if (result.success) {
         await Link.findByIdAndUpdate(link._id, {
             status: 'claimed',
-            amount: result.amount,
-            claimTime: new Date()
+            amount: result.amount
         });
         
-        await User.findOneAndUpdate(
-            { chatId },
-            {
-                $inc: {
-                    'claimSession.claimedLinks': 1,
-                    'claimSession.totalAmount': result.amount,
-                    'stats.totalClaims': 1,
-                    'stats.totalAmount': result.amount
-                }
-            }
-        );
-        
-        if (result.amount > 0) {
-            await User.findOneAndUpdate({ chatId }, { $inc: { 'claimSession.selectedCount': 1 } });
-        }
-        
         bot.sendMessage(chatId, `✅ Won: ₹${result.amount}`);
+        
     } else {
         await Link.findByIdAndUpdate(link._id, {
             status: 'failed',
-            error: result.error,
-            claimTime: new Date()
+            error: result.error
         });
         
-        await User.findOneAndUpdate(
-            { chatId },
-            {
-                $inc: {
-                    'claimSession.failedLinks': 1,
-                    'stats.totalClaims': 1
-                }
-            }
-        );
-        
-        bot.sendMessage(chatId, `❌ Failed: ${result.error}`);
+        bot.sendMessage(chatId, `❌ Failed: ${result.error || 'Error'}`);
     }
     
     // Next after 30 seconds
-    setTimeout(() => processNextLink(chatId, index + 1), 30000);
+    setTimeout(() => processNext(chatId, index + 1), 30000);
 }
 
-// Get final stats
-async function getFinalStats(chatId) {
-    const links = await Link.find({ chatId });
-    const claimed = links.filter(l => l.status === 'claimed').length;
-    const failed = links.filter(l => l.status === 'failed').length;
-    const totalAmount = links.reduce((sum, l) => sum + (l.amount || 0), 0);
-    const selected = links.filter(l => l.amount > 0).length;
-    
-    return `📊 *Results*\n\n` +
-        `Total: ${links.length}\n` +
-        `✅ Claimed: ${claimed}\n` +
-        `❌ Failed: ${failed}\n` +
-        `🎯 Selected: ${selected}\n` +
-        `💰 Amount: ₹${totalAmount}`;
-}
-
-// ========== BOT COMMANDS ==========
-bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    await User.findOneAndUpdate(
-        { chatId },
-        { username: msg.from.username },
-        { upsert: true }
-    );
-    
-    bot.sendMessage(chatId,
-        `🎁 *Lifafa Bot*\n\n` +
-        `1️⃣ Send links\n` +
-        `2️⃣ Set phone number\n` +
-        `3️⃣ Start claim`,
-        { parse_mode: 'Markdown', ...mainMenu }
-    );
-});
-
-bot.on('callback_query', async (cb) => {
-    const chatId = cb.message.chat.id;
-    bot.answerCallbackQuery(cb.id);
-    
-    switch(cb.data) {
-        case 'send_links':
-            bot.sendMessage(chatId, '📤 Send your lifafa links');
-            break;
-        case 'check_status':
-            await showStatus(chatId);
-            break;
-        case 'set_phone':
-            bot.sendMessage(chatId, '📞 Send 10-digit phone number');
-            break;
-        case 'start_claim':
-            await startClaimProcess(chatId);
-            break;
-        case 'statistics':
-            const stats = await getFinalStats(chatId);
-            bot.sendMessage(chatId, stats, { parse_mode: 'Markdown', ...mainMenu });
-            break;
-    }
-});
-
-bot.on('message', async (msg) => {
-    if (!msg.text || msg.text.startsWith('/')) return;
-    
-    const chatId = msg.chat.id;
-    const text = msg.text.trim();
-    
-    if (/^\d{10}$/.test(text)) {
-        await savePhoneNumber(chatId, text);
-    } else if (text.includes('lifafa') || text.includes('http')) {
-        await saveLink(chatId, text);
-    } else {
-        bot.sendMessage(chatId, '❌ Send link or phone number');
-    }
-});
-
-// Web server
+// ========== WEB SERVER ==========
 app.get('/', (req, res) => {
     res.send('🤖 Lifafa Bot Running');
 });
@@ -416,4 +378,4 @@ app.listen(PORT, () => {
     console.log(`✅ Server on port ${PORT}`);
 });
 
-console.log('🤖 Bot Started - FINAL WORKING VERSION');
+console.log('🤖 Bot Started - Ready to claim!');
