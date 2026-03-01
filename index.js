@@ -1,20 +1,20 @@
-// index.js - Main backend file
-const TelegramBot = require('node-telegram-bot-api');
+// index.js - Complete Webhook Version with Bulk Links & Correct Domain
 const express = require('express');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const axios = require('axios');
-const fs = require('fs');
 
 const app = express();
 app.use(express.json());
 
-// Environment variables with your provided credentials
+// Environment variables
 const TELEGRAM_TOKEN = '8603310729:AAFPtxjvuhTxhWWeHO70ApwyzLsmQVmZ2IM';
 const MONGODB_URI = 'mongodb+srv://amittgofficial_db_user:Amit70615544@cluster0.vqfljne.mongodb.net/lifafa-bot?retryWrites=true&w=majority';
 const PORT = process.env.PORT || 3000;
+const WEBHOOK_URL = 'https://botmaking.onrender.com/webhook';
 const ENCRYPTION_KEY = '12345678901234567890123456789012';
 const ENCRYPTION_IV = '1234567890123456';
+const LIFAFA_DOMAIN = 'https://mahakalxlifafa.in'; // CORRECT DOMAIN
 
 // MongoDB Schemas
 const linkSchema = new mongoose.Schema({
@@ -78,10 +78,7 @@ mongoose.connect(MONGODB_URI, {
     console.error('❌ MongoDB Connection Error:', err);
 });
 
-// Initialize Telegram Bot
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
-
-// Encryption function for lifafa claims
+// Encryption function
 function encryptPayload(payload) {
     try {
         const key = crypto.createHash('sha256').update(String(ENCRYPTION_KEY)).digest('base64').substr(0, 32);
@@ -124,67 +121,115 @@ function getProgressKeyboard(chatId) {
     };
 }
 
-// Start command
-bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    const user = await User.findOne({ chatId });
-    
-    if (!user) {
-        await new User({ 
-            chatId,
-            username: msg.from.username,
-            firstName: msg.from.first_name,
-            lastName: msg.from.last_name
-        }).save();
+// Create progress bar
+function createProgressBar(percent, length = 10) {
+    const filled = Math.round((percent / 100) * length);
+    const empty = length - filled;
+    return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+// ============== WEBHOOK SETUP ==============
+
+// Set webhook endpoint
+app.get('/setwebhook', async (req, res) => {
+    try {
+        const response = await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_URL}`);
+        res.json({
+            success: true,
+            message: 'Webhook set successfully',
+            data: response.data
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to set webhook',
+            error: error.message
+        });
     }
-    
-    const welcomeMsg = `🎁 *Welcome to Lifafa Auto-Claim Bot!*
-
-🤖 I can help you automatically claim multiple lifafa links with 30-second delay between claims.
-
-*How to use:*
-1️⃣ Click "Send Links Now" to start adding links
-2️⃣ Forward your lifafa links to me (I'll store them for 24h)
-3️⃣ Set your 10-digit phone number
-4️⃣ Click "Start Claim" to begin auto-claiming
-
-⏰ *Features:*
-• Links auto-delete after 24 hours
-• 30-second delay between claims
-• Live progress tracking
-• Detailed statistics
-• Success/Failed count
-
-*Let's begin!* 👇`;
-    
-    bot.sendMessage(chatId, welcomeMsg, { 
-        parse_mode: 'Markdown',
-        ...mainMenu 
-    });
 });
 
+// Get webhook info
+app.get('/webhookinfo', async (req, res) => {
+    try {
+        const response = await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/getWebhookInfo`);
+        res.json(response.data);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Delete webhook
+app.get('/deletewebhook', async (req, res) => {
+    try {
+        const response = await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/deleteWebhook`);
+        res.json({
+            success: true,
+            message: 'Webhook deleted successfully',
+            data: response.data
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Main webhook endpoint
+app.post('/webhook', async (req, res) => {
+    try {
+        const update = req.body;
+        console.log('📩 Received update:', JSON.stringify(update, null, 2));
+        
+        await processUpdate(update);
+        
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('Error processing webhook:', error);
+        res.sendStatus(200);
+    }
+});
+
+// Process Telegram updates
+async function processUpdate(update) {
+    try {
+        if (update.callback_query) {
+            await handleCallbackQuery(update.callback_query);
+        }
+        else if (update.message) {
+            await handleMessage(update.message);
+        }
+    } catch (error) {
+        console.error('Error in processUpdate:', error);
+    }
+}
+
 // Handle callback queries
-bot.on('callback_query', async (callbackQuery) => {
+async function handleCallbackQuery(callbackQuery) {
     const chatId = callbackQuery.message.chat.id;
-    const messageId = callbackQuery.message.message_id;
     const action = callbackQuery.data;
     
-    // Answer callback query
-    bot.answerCallbackQuery(callbackQuery.id);
+    await sendTelegramRequest('answerCallbackQuery', {
+        callback_query_id: callbackQuery.id
+    });
     
     switch(action) {
         case 'send_links':
-            bot.sendMessage(chatId, 
+            await sendTelegramMessage(chatId, 
                 `📤 *Send Your Lifafa Links*
 
-Please forward or send all your lifafa links now.
-One link per message.
+You can send:
+• One link per message
+• Multiple links at once (copy-paste all links)
 
 ✅ Links saved for 24 hours
-✅ You'll see them in status
+✅ Bulk save supported - send all links together
 ✅ Add as many as you want
 
-*Send your first link:*`,
+*Send your links now:*`,
                 { parse_mode: 'Markdown' }
             );
             break;
@@ -194,7 +239,7 @@ One link per message.
             break;
             
         case 'set_phone':
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 `📞 *Set Your Phone Number*
 
 Please send your 10-digit phone number.
@@ -223,14 +268,14 @@ Example: \`9876543210\`
             break;
             
         case 'main_menu':
-            bot.sendMessage(chatId, '🏠 *Main Menu*', {
+            await sendTelegramMessage(chatId, '🏠 *Main Menu*', {
                 parse_mode: 'Markdown',
                 ...mainMenu
             });
             break;
             
         case 'help':
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 `❓ *Help & Commands*
 
 📤 *Send Links* - Add new lifafa links
@@ -248,19 +293,80 @@ Example: \`9876543210\`
 ⏱️ *Delay:* 30 seconds between claims
 ⏰ *Link expiry:* 24 hours
 
-Need help? Contact @admin`,
+*Bulk Links:* Send multiple links at once (one per line)`,
                 { parse_mode: 'Markdown', ...mainMenu }
             );
             break;
     }
-});
+}
 
-// Handle incoming messages (links and phone numbers)
-bot.on('message', async (msg) => {
-    if (!msg.text || msg.text.startsWith('/')) return;
+// Handle regular messages
+async function handleMessage(message) {
+    if (!message.text) return;
     
-    const chatId = msg.chat.id;
-    const text = msg.text.trim();
+    const chatId = message.chat.id;
+    const text = message.text.trim();
+    
+    // Handle /start command
+    if (text === '/start') {
+        const user = await User.findOne({ chatId });
+        
+        if (!user) {
+            await new User({ 
+                chatId,
+                username: message.from.username,
+                firstName: message.from.first_name,
+                lastName: message.from.last_name
+            }).save();
+        }
+        
+        const welcomeMsg = `🎁 *Welcome to Lifafa Auto-Claim Bot!*
+
+🤖 I can help you automatically claim multiple lifafa links with 30-second delay.
+
+*How to use:*
+1️⃣ Click "Send Links Now" to start adding links
+2️⃣ Send your lifafa links (one by one or ALL AT ONCE)
+3️⃣ Set your 10-digit phone number
+4️⃣ Click "Start Claim" to begin auto-claiming
+
+✨ *New Feature:* Send multiple links together! Just copy-paste all links.
+
+⏰ *Features:*
+• Links auto-delete after 24 hours
+• 30-second delay between claims
+• Live progress tracking
+• Detailed statistics
+• Bulk link support
+
+*Let's begin!* 👇`;
+        
+        await sendTelegramMessage(chatId, welcomeMsg, { 
+            parse_mode: 'Markdown',
+            ...mainMenu 
+        });
+        return;
+    }
+    
+    // Handle /status command
+    if (text === '/status') {
+        await showStatus(chatId);
+        return;
+    }
+    
+    // Handle /claim command
+    if (text === '/claim') {
+        await startClaimProcess(chatId);
+        return;
+    }
+    
+    // Handle /clear command
+    if (text === '/clear') {
+        await Link.deleteMany({ chatId });
+        await User.findOneAndUpdate({ chatId }, { links: [] });
+        await sendTelegramMessage(chatId, '🗑️ All your links have been cleared!', mainMenu);
+        return;
+    }
     
     // Check if it's a phone number (10 digits)
     if (/^\d{10}$/.test(text)) {
@@ -268,23 +374,139 @@ bot.on('message', async (msg) => {
         return;
     }
     
-    // Check if it's a lifafa link
+    // ========== BULK LINKS SAVE ==========
+    // Check if text contains multiple lines with links
+    const lines = text.split('\n').filter(line => line.trim().length > 0);
+    if (lines.length > 1 && lines.some(line => line.includes('http'))) {
+        const { savedCount, duplicateCount, invalidCount } = await saveBulkLinks(chatId, text);
+        
+        const totalLinks = await Link.countDocuments({ chatId });
+        
+        let responseMsg = `📦 *Bulk Links Processing Complete!*\n\n`;
+        responseMsg += `📊 *Summary:*\n`;
+        responseMsg += `• ✅ Saved: ${savedCount} new links\n`;
+        responseMsg += `• 🔁 Duplicate: ${duplicateCount} links\n`;
+        responseMsg += `• ❌ Invalid: ${invalidCount} links\n`;
+        responseMsg += `• 📚 Total Links Now: ${totalLinks}\n\n`;
+        
+        if (savedCount > 0) {
+            responseMsg += `✨ You can now start claiming!`;
+        } else {
+            responseMsg += `⚠️ No new links were added.`;
+        }
+        
+        await sendTelegramMessage(chatId, responseMsg, {
+            parse_mode: 'Markdown',
+            ...mainMenu
+        });
+        return;
+    }
+    
+    // Single link check
     if (text.includes('lifafa') || text.includes('claim') || text.includes('gift') || text.startsWith('http')) {
         await saveLink(chatId, text);
         return;
     }
     
     // Unknown input
-    bot.sendMessage(chatId,
+    await sendTelegramMessage(chatId,
         `❌ *Invalid Input*
 
 Please either:
-• Send a valid lifafa link
+• Send lifafa links (one or multiple)
 • Send a 10-digit phone number
 • Use the menu buttons below`,
         { parse_mode: 'Markdown', ...mainMenu }
     );
-});
+}
+
+// ========== BULK LINKS SAVE FUNCTION ==========
+async function saveBulkLinks(chatId, text) {
+    try {
+        const lines = text.split('\n');
+        let savedCount = 0;
+        let duplicateCount = 0;
+        let invalidCount = 0;
+        
+        for (const line of lines) {
+            const link = line.trim();
+            
+            // Skip empty lines
+            if (!link) continue;
+            
+            // Check if it's a valid link
+            if (link.startsWith('http') && (link.includes('lifafa') || link.includes('?i='))) {
+                
+                // Check for duplicate
+                const existingLink = await Link.findOne({ chatId, link });
+                if (existingLink) {
+                    duplicateCount++;
+                    continue;
+                }
+                
+                // Extract lifafa ID
+                let lifafaId = 'default';
+                let referId = '';
+                try {
+                    const url = new URL(link);
+                    lifafaId = url.searchParams.get('i') || 'default';
+                    referId = url.searchParams.get('ref') || '';
+                } catch (e) {
+                    const match = link.match(/[?&]i=([^&]+)/);
+                    if (match) lifafaId = match[1];
+                }
+                
+                // Save new link
+                const newLink = new Link({
+                    chatId,
+                    link,
+                    lifafaId,
+                    referId,
+                    status: 'pending'
+                });
+                
+                await newLink.save();
+                
+                // Add to user's links array
+                await User.findOneAndUpdate(
+                    { chatId },
+                    { $push: { links: newLink._id } },
+                    { upsert: true }
+                );
+                
+                savedCount++;
+            } else {
+                invalidCount++;
+            }
+        }
+        
+        return { savedCount, duplicateCount, invalidCount };
+    } catch (error) {
+        console.error('Bulk save error:', error);
+        return { savedCount: 0, duplicateCount: 0, invalidCount: 0 };
+    }
+}
+
+// Helper function for Telegram requests
+async function sendTelegramRequest(method, params) {
+    try {
+        const response = await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/${method}`, params);
+        return response.data;
+    } catch (error) {
+        console.error(`Error in telegram ${method}:`, error.response?.data || error.message);
+        return null;
+    }
+}
+
+// Helper function to send messages
+async function sendTelegramMessage(chatId, text, options = {}) {
+    return sendTelegramRequest('sendMessage', {
+        chat_id: chatId,
+        text: text,
+        parse_mode: options.parse_mode || 'Markdown',
+        reply_markup: options.reply_markup
+    });
+}
 
 // Save phone number
 async function savePhoneNumber(chatId, phone) {
@@ -292,10 +514,10 @@ async function savePhoneNumber(chatId, phone) {
         const user = await User.findOneAndUpdate(
             { chatId },
             { phoneNumber: phone },
-            { new: true }
+            { new: true, upsert: true }
         );
         
-        bot.sendMessage(chatId,
+        await sendTelegramMessage(chatId,
             `✅ *Phone Number Saved!*
 
 📞 Number: \`${phone}\`
@@ -307,14 +529,14 @@ Now you can:
             { parse_mode: 'Markdown', ...mainMenu }
         );
     } catch (error) {
-        bot.sendMessage(chatId, '❌ Error saving phone number. Please try again.');
+        await sendTelegramMessage(chatId, '❌ Error saving phone number. Please try again.');
     }
 }
 
-// Save link
+// Save single link
 async function saveLink(chatId, link) {
     try {
-        // Extract lifafa ID from link
+        // Extract lifafa ID
         let lifafaId = 'default';
         let referId = '';
         
@@ -323,15 +545,14 @@ async function saveLink(chatId, link) {
             lifafaId = url.searchParams.get('i') || 'default';
             referId = url.searchParams.get('ref') || '';
         } catch (e) {
-            // Not a valid URL, try regex
             const match = link.match(/[?&]i=([^&]+)/);
             if (match) lifafaId = match[1];
         }
         
-        // Check if link already exists for this user
+        // Check if link already exists
         const existingLink = await Link.findOne({ chatId, link });
         if (existingLink) {
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 `⚠️ *Link Already Exists*
 
 This link is already in your list.
@@ -356,12 +577,13 @@ Total links: ${await Link.countDocuments({ chatId })}`,
         // Add to user's links array
         await User.findOneAndUpdate(
             { chatId },
-            { $push: { links: newLink._id } }
+            { $push: { links: newLink._id } },
+            { upsert: true }
         );
         
         const totalLinks = await Link.countDocuments({ chatId });
         
-        bot.sendMessage(chatId,
+        await sendTelegramMessage(chatId,
             `✅ *Link Saved Successfully!*
 
 🔗 Link: \`${link.substring(0, 50)}${link.length > 50 ? '...' : ''}\`
@@ -373,7 +595,7 @@ You can send more links or start claiming!`,
         );
     } catch (error) {
         console.error('Error saving link:', error);
-        bot.sendMessage(chatId, '❌ Error saving link. Please try again.');
+        await sendTelegramMessage(chatId, '❌ Error saving link. Please try again.');
     }
 }
 
@@ -384,7 +606,7 @@ async function showStatus(chatId) {
         const user = await User.findOne({ chatId });
         
         if (links.length === 0) {
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 `📊 *Status*
 
 You haven't added any links yet.
@@ -418,28 +640,16 @@ ${phoneStatus}
 
 ${user?.claimSession?.active ? '🔄 *Claim session active*' : '⏸️ *Claim session inactive*'}`;
 
-        // Create detailed list for small number of links
-        let details = '';
-        if (links.length <= 10) {
-            details = '\n\n*Link Details:*\n';
-            links.forEach((link, index) => {
-                const statusEmoji = link.status === 'claimed' ? '✅' : 
-                                   link.status === 'failed' ? '❌' : '⏳';
-                details += `${index + 1}. ${statusEmoji} ₹${link.amount || 0} - ${link.link.substring(0, 30)}...\n`;
-            });
-        }
-        
-        bot.sendMessage(chatId, statusMsg + details, {
+        await sendTelegramMessage(chatId, statusMsg, {
             parse_mode: 'Markdown',
             ...mainMenu
         });
     } catch (error) {
         console.error('Error showing status:', error);
-        bot.sendMessage(chatId, '❌ Error fetching status. Please try again.');
     }
 }
 
-// Show live statistics
+// Show live stats
 async function showLiveStats(chatId) {
     try {
         const links = await Link.find({ chatId });
@@ -450,11 +660,9 @@ async function showLiveStats(chatId) {
         const failed = links.filter(l => l.status === 'failed').length;
         const totalAmount = links.reduce((sum, l) => sum + (l.amount || 0), 0);
         
-        // Calculate selected/unselected (assuming amount > 0 means selected)
         const selected = links.filter(l => l.amount > 0).length;
         const unselected = links.filter(l => l.amount === 0 && l.status !== 'pending').length;
         
-        // Create progress bar
         const total = links.length;
         const processed = claimed + failed;
         const progressPercent = total > 0 ? (processed / total) * 100 : 0;
@@ -476,10 +684,9 @@ ${processed}/${total} processed
 • Average Amount: ${claimed > 0 ? Math.round(totalAmount/claimed) : 0}
 
 *Session:*
-${user?.claimSession?.active ? '🟢 Active' : '🔴 Inactive'}
-Started: ${user?.claimSession?.startedAt ? new Date(user.claimSession.startedAt).toLocaleString() : 'Not started'}`;
+${user?.claimSession?.active ? '🟢 Active' : '🔴 Inactive'}`;
 
-        bot.sendMessage(chatId, statsMsg, {
+        await sendTelegramMessage(chatId, statsMsg, {
             parse_mode: 'Markdown',
             ...getProgressKeyboard(chatId)
         });
@@ -515,20 +722,13 @@ async function showStatistics(chatId) {
 
 *Success Rate:* ${totalClaims > 0 ? Math.round((selected/totalClaims)*100) : 0}%`;
 
-        bot.sendMessage(chatId, statsMsg, {
+        await sendTelegramMessage(chatId, statsMsg, {
             parse_mode: 'Markdown',
             ...mainMenu
         });
     } catch (error) {
         console.error('Error showing statistics:', error);
     }
-}
-
-// Create progress bar
-function createProgressBar(percent, length = 10) {
-    const filled = Math.round((percent / 100) * length);
-    const empty = length - filled;
-    return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
 // Start claim process
@@ -538,7 +738,7 @@ async function startClaimProcess(chatId) {
         const links = await Link.find({ chatId, status: 'pending' }).sort({ createdAt: 1 });
         
         if (!user?.phoneNumber) {
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 '❌ *Phone Number Required*\n\nPlease set your phone number first using "Set Phone Number" button.',
                 { parse_mode: 'Markdown', ...mainMenu }
             );
@@ -546,16 +746,15 @@ async function startClaimProcess(chatId) {
         }
         
         if (links.length === 0) {
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 '❌ *No Pending Links*\n\nAll links have been processed or you have no links. Add new links to continue.',
                 { parse_mode: 'Markdown', ...mainMenu }
             );
             return;
         }
         
-        // Check if already claiming
         if (user.claimSession?.active) {
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 '🔄 *Claim Already Active*\n\nA claim session is already running. Use "Live Stats" to check progress.',
                 { parse_mode: 'Markdown', ...mainMenu }
             );
@@ -578,7 +777,7 @@ async function startClaimProcess(chatId) {
             }
         );
         
-        bot.sendMessage(chatId,
+        await sendTelegramMessage(chatId,
             `🚀 *Claim Process Started!*
 
 📊 *Summary:*
@@ -598,7 +797,6 @@ Use "Live Stats" to track progress.`,
         
     } catch (error) {
         console.error('Error starting claim:', error);
-        bot.sendMessage(chatId, '❌ Error starting claim process. Please try again.');
     }
 }
 
@@ -607,9 +805,8 @@ async function processNextLink(chatId, index) {
     try {
         const user = await User.findOne({ chatId });
         
-        // Check if session is still active
         if (!user?.claimSession?.active) {
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 '⏸️ *Claim Process Paused*\n\nClick "Start Claim" to resume.',
                 { parse_mode: 'Markdown', ...mainMenu }
             );
@@ -630,7 +827,7 @@ async function processNextLink(chatId, index) {
             
             const finalStats = await getFinalStats(chatId);
             
-            bot.sendMessage(chatId,
+            await sendTelegramMessage(chatId,
                 `✅ *Claim Process Completed!*
 
 ${finalStats}
@@ -643,7 +840,6 @@ ${finalStats}
         
         const link = links[index];
         
-        // Update current index
         await User.findOneAndUpdate(
             { chatId },
             { 'claimSession.currentIndex': index }
@@ -651,7 +847,7 @@ ${finalStats}
         
         // Send progress update
         const progressMsg = await getProgressMessage(chatId, index, links.length);
-        await bot.sendMessage(chatId, progressMsg, {
+        await sendTelegramMessage(chatId, progressMsg, {
             parse_mode: 'Markdown',
             ...getProgressKeyboard(chatId)
         });
@@ -661,7 +857,6 @@ ${finalStats}
             const result = await claimSingleLink(chatId, link);
             
             if (result.success) {
-                // Update link status
                 await Link.findByIdAndUpdate(link._id, {
                     status: 'claimed',
                     amount: result.amount || 4,
@@ -669,7 +864,6 @@ ${finalStats}
                     claimTime: new Date()
                 });
                 
-                // Update user stats
                 await User.findOneAndUpdate(
                     { chatId },
                     {
@@ -683,7 +877,6 @@ ${finalStats}
                     }
                 );
                 
-                // Increment selected/unselected
                 if (result.amount > 0) {
                     await User.findOneAndUpdate(
                         { chatId },
@@ -696,7 +889,7 @@ ${finalStats}
                     );
                 }
                 
-                await bot.sendMessage(chatId,
+                await sendTelegramMessage(chatId,
                     `✅ *Claim Successful!*
 
 💰 Amount: ₹${result.amount || 4}
@@ -706,7 +899,6 @@ Next claim in 30 seconds...`,
                     { parse_mode: 'Markdown' }
                 );
             } else {
-                // Failed claim
                 await Link.findByIdAndUpdate(link._id, {
                     status: 'failed',
                     error: result.error,
@@ -724,7 +916,7 @@ Next claim in 30 seconds...`,
                     }
                 );
                 
-                await bot.sendMessage(chatId,
+                await sendTelegramMessage(chatId,
                     `❌ *Claim Failed*
 
 ⚠️ Error: ${result.error || 'Unknown error'}
@@ -760,12 +952,11 @@ Next claim in 30 seconds...`,
     }
 }
 
-// Claim single link
+// ========== CLAIM SINGLE LINK WITH CORRECT DOMAIN ==========
 async function claimSingleLink(chatId, link) {
     try {
         const user = await User.findOne({ chatId });
         
-        // Prepare claim payload
         const payload = {
             action: "claimlifafa",
             lid: link.lifafaId || 'default',
@@ -775,16 +966,18 @@ async function claimSingleLink(chatId, link) {
             selected: ""
         };
         
-        // Encrypt payload
         const encryptedPayload = encryptPayload(payload);
         
-        const formData = new FormData();
+        const formData = new URLSearchParams();
         formData.append('data', encryptedPayload);
         
-        // Make claim request to lifafa handler
-        const response = await axios.post('https://your-lifafa-site.com/handler', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
+        // USING CORRECT DOMAIN - mahakalxlifafa.in
+        const response = await axios.post(`${LIFAFA_DOMAIN}/handler`, formData, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 10000 // 10 second timeout
         });
+        
+        console.log('Claim response:', response.data);
         
         if (response.data.status === "success") {
             const isSuccess = response.data.claim_status !== "tried";
@@ -804,10 +997,17 @@ async function claimSingleLink(chatId, link) {
             };
         }
     } catch (error) {
-        console.error('Claim error:', error);
+        console.error('Claim error details:', {
+            message: error.message,
+            code: error.code,
+            response: error.response?.data
+        });
+        
         return {
             success: false,
-            error: error.message || 'Network error'
+            error: error.code === 'ECONNABORTED' ? 'Request timeout' : 
+                   error.code === 'ENOTFOUND' ? 'Domain not found' : 
+                   error.message || 'Network error'
         };
     }
 }
@@ -856,9 +1056,9 @@ async function getFinalStats(chatId) {
 • ✅ Claimed: ${claimed}
 • ❌ Failed: ${failed}
 • 🎯 Selected: ${selected}
-• ❌ Unselected: ${unselected}
+• ⚪ Unselected: ${unselected}
 • 💰 Total Amount: ₹${totalAmount}
-• 📈 Success Rate: ${Math.round((claimed/links.length)*100)}%
+• 📈 Success Rate: ${links.length > 0 ? Math.round((claimed/links.length)*100) : 0}%
 • 💵 Average: ${claimed > 0 ? Math.round(totalAmount/claimed) : 0}`;
 }
 
@@ -869,29 +1069,49 @@ async function pauseClaim(chatId) {
         { 'claimSession.active': false }
     );
     
-    bot.sendMessage(chatId,
+    await sendTelegramMessage(chatId,
         '⏸️ *Claim Process Paused*\n\nClick "Start Claim" to resume.',
         { parse_mode: 'Markdown', ...mainMenu }
     );
 }
 
-// Error handling
-bot.on('polling_error', (error) => {
-    console.error('Polling error:', error);
-});
-
-// Express route for health check
+// Health check endpoint
 app.get('/', (req, res) => {
-    res.send('🤖 Lifafa Bot is Running!');
-});
-
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date() });
+    res.send(`
+        <html>
+            <head>
+                <title>Lifafa Bot</title>
+                <style>
+                    body { font-family: Arial; text-align: center; margin-top: 50px; background: #1a1a2e; color: white; }
+                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                    h1 { color: #ff9a00; }
+                    .status { background: #16213e; padding: 20px; border-radius: 10px; margin: 20px 0; }
+                    .btn { display: inline-block; background: #ff9a00; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 5px; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>🤖 Lifafa Telegram Bot</h1>
+                    <div class="status">
+                        <p>Status: 🟢 Running</p>
+                        <p>Domain: ${LIFAFA_DOMAIN}</p>
+                        <p>Webhook URL: <code>${WEBHOOK_URL}</code></p>
+                    </div>
+                    <div>
+                        <a href="/setwebhook" class="btn">Set Webhook</a>
+                        <a href="/webhookinfo" class="btn">Webhook Info</a>
+                        <a href="/deletewebhook" class="btn">Delete Webhook</a>
+                    </div>
+                </div>
+            </body>
+        </html>
+    `);
 });
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
+    console.log('✅ Server running on port', PORT);
+    console.log('🌐 Webhook URL:', WEBHOOK_URL);
+    console.log('🎯 Target Domain:', LIFAFA_DOMAIN);
+    console.log('🔗 Set webhook:', `https://botmaking.onrender.com/setwebhook`);
 });
-
-console.log('🤖 Telegram Bot Started...');
