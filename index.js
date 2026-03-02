@@ -42,6 +42,7 @@ const lifafaSchema = new mongoose.Schema({
     link: String,
     lifafaId: String,
     status: { type: String, default: 'pending' },
+    amount: { type: Number, default: 0 },
     claimedAt: Date,
     createdAt: { type: Date, default: Date.now }
 });
@@ -53,7 +54,8 @@ const userSchema = new mongoose.Schema({
     stats: {
         totalLifafas: { type: Number, default: 0 },
         totalSuccess: { type: Number, default: 0 },
-        totalFailed: { type: Number, default: 0 }
+        totalFailed: { type: Number, default: 0 },
+        totalAmount: { type: Number, default: 0 }
     }
 });
 
@@ -183,7 +185,7 @@ bot.on('message', async (msg) => {
             await Lifafa.deleteMany({ chatId });
             await User.findOneAndUpdate(
                 { chatId }, 
-                { stats: { totalLifafas: 0, totalSuccess: 0, totalFailed: 0 } }
+                { stats: { totalLifafas: 0, totalSuccess: 0, totalFailed: 0, totalAmount: 0 } }
             );
             bot.sendMessage(chatId, `🗑️ Cleared ${count} links`, mainMenu);
             return;
@@ -287,13 +289,14 @@ async function showStatus(chatId) {
         const pending = lifafas.filter(l => l.status === 'pending').length;
         const success = lifafas.filter(l => l.status === 'success').length;
         const failed = lifafas.filter(l => l.status === 'failed').length;
+        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
         
         let recentText = '';
         if (lifafas.length > 0) {
             recentText = '\n📌 *Recent:*\n';
             lifafas.slice(0, 3).forEach(l => {
                 const emoji = l.status === 'success' ? '✅' : l.status === 'failed' ? '❌' : '⏳';
-                recentText += `${emoji} \`${l.lifafaId}\`\n`;
+                recentText += `${emoji} \`${l.lifafaId}\` ${l.amount > 0 ? '₹'+l.amount : ''}\n`;
             });
         }
         
@@ -303,6 +306,7 @@ async function showStatus(chatId) {
             `Pending: ${pending}\n` +
             `Success: ${success}\n` +
             `Failed: ${failed}\n` +
+            `Amount: ₹${totalAmount}\n` +
             `Phone: ${user?.currentPhone || 'Not set'}` +
             recentText,
             { parse_mode: 'Markdown', ...mainMenu }
@@ -319,6 +323,7 @@ async function showStats(chatId) {
         
         const success = lifafas.filter(l => l.status === 'success').length;
         const failed = lifafas.filter(l => l.status === 'failed').length;
+        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
         
         const successRate = lifafas.length > 0 ? 
             Math.round((success / lifafas.length) * 100) : 0;
@@ -328,6 +333,7 @@ async function showStats(chatId) {
             `Total: ${lifafas.length}\n` +
             `Success: ${success}\n` +
             `Failed: ${failed}\n` +
+            `Amount: ₹${totalAmount}\n` +
             `Rate: ${successRate}%`,
             { parse_mode: 'Markdown', ...mainMenu }
         );
@@ -359,12 +365,15 @@ async function claimLifafa(lifafaId, phoneNumber) {
         
         if (response.data?.status === "success") {
             const isSuccess = response.data.claim_status !== "tried";
-            return { success: isSuccess };
+            return {
+                success: isSuccess,
+                amount: isSuccess ? (response.data.perUser || 4) : 0
+            };
         }
-        return { success: false };
+        return { success: false, amount: 0 };
     } catch (error) {
         console.log('Claim error:', error.message);
-        return { success: false };
+        return { success: false, amount: 0 };
     }
 }
 
@@ -384,7 +393,7 @@ async function startClaiming(chatId) {
             return;
         }
         
-        // Initial message
+        // Initial message that will be updated
         let statusMsg = await bot.sendMessage(chatId, 
             `⏳ *Claiming ${lifafas.length} lifafas...*\n\n` +
             `━━━━━━━━━━━━━━━`, 
@@ -393,6 +402,7 @@ async function startClaiming(chatId) {
         
         let success = 0;
         let failed = 0;
+        let totalAmount = 0;
         let resultText = '';
         
         for (let i = 0; i < lifafas.length; i++) {
@@ -402,8 +412,10 @@ async function startClaiming(chatId) {
             
             if (result.success) {
                 success++;
+                totalAmount += result.amount;
                 lifafa.status = 'success';
-                resultText += `#${i+1}: \`${lifafa.lifafaId}\` - ✅ Selected\n`;
+                lifafa.amount = result.amount;
+                resultText += `#${i+1}: \`${lifafa.lifafaId}\` - ✅ Selected (₹${result.amount})\n`;
             } else {
                 failed++;
                 lifafa.status = 'failed';
@@ -412,28 +424,27 @@ async function startClaiming(chatId) {
             
             await lifafa.save();
             
-            // Update status message every 5 items
-            if ((i + 1) % 5 === 0 || i === lifafas.length - 1) {
-                await bot.editMessageText(
-                    `⏳ *Claiming ${lifafas.length} lifafas...*\n\n` +
-                    `${resultText}\n` +
-                    `━━━━━━━━━━━━━━━`,
-                    {
-                        chat_id: chatId,
-                        message_id: statusMsg.message_id,
-                        parse_mode: 'Markdown'
-                    }
-                );
-            }
+            // Update status message
+            await bot.editMessageText(
+                `⏳ *Claiming ${lifafas.length} lifafas...*\n\n` +
+                `${resultText}\n` +
+                `━━━━━━━━━━━━━━━`,
+                {
+                    chat_id: chatId,
+                    message_id: statusMsg.message_id,
+                    parse_mode: 'Markdown'
+                }
+            );
             
-            // Update user stats
+            // Update stats
             await User.findOneAndUpdate(
                 { chatId },
                 {
                     stats: {
                         totalLifafas: lifafas.length,
                         totalSuccess: success,
-                        totalFailed: failed
+                        totalFailed: failed,
+                        totalAmount: totalAmount
                     }
                 }
             );
@@ -456,7 +467,7 @@ async function startClaiming(chatId) {
             }
         }
         
-        // Final summary message
+        // Final summary - update the same message
         await bot.editMessageText(
             `✅ *Claiming Complete!*\n\n` +
             `${resultText}\n` +
@@ -464,7 +475,8 @@ async function startClaiming(chatId) {
             `📊 *Summary:*\n` +
             `Total: ${lifafas.length}\n` +
             `✅ Selected: ${success}\n` +
-            `❌ Not selected: ${failed}`,
+            `❌ Not selected: ${failed}\n` +
+            `💰 Total amount: ₹${totalAmount}`,
             {
                 chat_id: chatId,
                 message_id: statusMsg.message_id,
