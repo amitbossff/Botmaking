@@ -397,7 +397,8 @@ async function startClaiming(chatId) {
             `⏳ Processing: 0/${lifafas.length}\n` +
             `✅ Selected: 0\n` +
             `❌ Not selected: 0\n\n` +
-            `⚡ *Live Updates Below:*`,
+            `⚡ *Live Updates:*\n` +
+            `_Waiting to start..._`,
             { parse_mode: 'Markdown' }
         );
         
@@ -408,7 +409,7 @@ async function startClaiming(chatId) {
         for (let i = 0; i < lifafas.length; i++) {
             const lifafa = lifafas[i];
             
-            // Update status message with current processing
+            // Show processing indicator
             await bot.editMessageText(
                 `🚀 *Claim Started*\n\n` +
                 `📱 Phone: \`${user.currentPhone}\`\n` +
@@ -456,10 +457,10 @@ async function startClaiming(chatId) {
                 }
             );
             
-            // Keep only last 5 results to avoid message too long
-            const resultLines = resultMessage.split('\n').slice(0, 5).join('\n');
+            // Keep only last 8 results to avoid message too long
+            const resultLines = resultMessage.split('\n').slice(0, 8).join('\n');
             
-            // Update message with result
+            // Update message with result - THIS IS THE ONLY MESSAGE, NO FINAL MESSAGE
             await bot.editMessageText(
                 `🚀 *Claim Started*\n\n` +
                 `📱 Phone: \`${user.currentPhone}\`\n` +
@@ -467,38 +468,24 @@ async function startClaiming(chatId) {
                 `⏳ Processing: ${i+1}/${lifafas.length}\n` +
                 `✅ Selected: ${success}\n` +
                 `❌ Not selected: ${failed}\n\n` +
-                `⚡ *Latest Results:*\n` +
-                `${resultLines}`,
+                `⚡ *Live Updates:*\n` +
+                `${resultLines || '_No results yet_'}\n\n` +
+                `✨ Use menu below to continue`,
                 {
                     chat_id: chatId,
                     message_id: initialMsg.message_id,
-                    parse_mode: 'Markdown'
+                    parse_mode: 'Markdown',
+                    reply_markup: mainMenu.reply_markup
                 }
             );
             
             // 2 SECONDS DELAY between claims
             if (i < lifafas.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await new Promise(resolve => setTimeout(resolve, 3000));
             }
         }
         
-        // Final summary in the same message
-        await bot.editMessageText(
-            `✅ *Claiming Completed!*\n\n` +
-            `📱 Phone: \`${user.currentPhone}\`\n` +
-            `📊 Total: ${lifafas.length}\n` +
-            `✅ Selected: ${success}\n` +
-            `❌ Not selected: ${failed}\n\n` +
-            `📋 *Final Results:*\n` +
-            `${resultMessage.slice(0, 300)}` + // Show results but limit length
-            `\n\n✨ Use /start for main menu`,
-            {
-                chat_id: chatId,
-                message_id: initialMsg.message_id,
-                parse_mode: 'Markdown',
-                reply_markup: mainMenu.reply_markup
-            }
-        );
+        // The message already shows the final state - no separate completion message
         
     } catch (error) {
         console.log('Claiming error:', error.message);
@@ -519,4 +506,4 @@ console.log('✅ Bot Ready - Forward any post!');
 console.log('⏱️ Delay set to 2 seconds between claims');
 console.log('💰 Amount display removed - only ✅ Selected shown');
 console.log('🔄 Links persist - just update number and claim again');
-console.log('📱 Single message updates - no spam!');
+console.log('📱 Single message updates - no spam, no final message!');
