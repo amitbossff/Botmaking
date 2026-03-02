@@ -1,154 +1,119 @@
-// index.js - VERIFICATION + CLAIM BOTH
+// index.js - UNIVERSAL LINK DETECTOR
 const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
 const mongoose = require('mongoose');
 const CryptoJS = require('crypto-js');
 const axios = require('axios');
+const express = require('express');
 
-const app = express();
-app.use(express.json());
-
-// Your credentials
+// ========== CONFIGURATION ==========
 const TELEGRAM_TOKEN = '8603310729:AAFPtxjvuhTxhWWeHO70ApwyzLsmQVmZ2IM';
 const MONGODB_URI = 'mongodb+srv://amittgofficial_db_user:Amit70615544@cluster0.vqfljne.mongodb.net/lifafa-bot?retryWrites=true&w=majority';
+const ENCRYPTION_KEY = '12345678901234567890123456789012';
+const ENCRYPTION_IV = '1234567890123456';
 const PORT = process.env.PORT || 3000;
 
-// MongoDB Schema
-const linkSchema = new mongoose.Schema({
+// ========== EXPRESS SERVER FOR RENDER ==========
+const app = express();
+
+// Health check endpoint for Render
+app.get('/', (req, res) => {
+    res.send('🤖 Telegram Bot is running');
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', timestamp: new Date() });
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 Web server running on port ${PORT}`);
+});
+
+// ========== MONGODB CONNECTION ==========
+mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+})
+    .then(() => console.log('✅ MongoDB Connected'))
+    .catch(err => console.log('❌ MongoDB Error:', err.message));
+
+// ========== SCHEMAS ==========
+const lifafaSchema = new mongoose.Schema({
     chatId: Number,
     link: String,
     lifafaId: String,
-    tParam: String,        // Important: t parameter from verification link
-    verified: { type: Boolean, default: false },
-    verifiedData: Object,
     status: { type: String, default: 'pending' },
-    amount: Number,
-    error: String,
-    createdAt: { type: Date, default: Date.now, expires: '24h' }
+    amount: { type: Number, default: 0 },
+    claimedAt: Date,
+    createdAt: { type: Date, default: Date.now }
 });
 
 const userSchema = new mongoose.Schema({
     chatId: { type: Number, unique: true },
-    phoneNumber: String,
-    links: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Link' }],
-    claimSession: {
-        active: { type: Boolean, default: false },
-        currentIndex: { type: Number, default: 0 }
+    phoneNumbers: [String],
+    currentPhone: String,
+    stats: {
+        totalLifafas: { type: Number, default: 0 },
+        totalSuccess: { type: Number, default: 0 },
+        totalFailed: { type: Number, default: 0 },
+        totalAmount: { type: Number, default: 0 }
     }
 });
 
-const Link = mongoose.model('Link', linkSchema);
+const Lifafa = mongoose.model('Lifafa', lifafaSchema);
 const User = mongoose.model('User', userSchema);
 
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI).then(() => console.log('✅ MongoDB Connected'));
+// ========== INITIALIZE BOT ==========
+const bot = new TelegramBot(TELEGRAM_TOKEN, { 
+    polling: true,
+    request: {
+        timeout: 30000 // 30 second timeout
+    }
+});
 
-// Initialize Bot
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+console.log('🤖 Bot Started - Universal Link Detector');
+console.log('📱 Deployed on Render with 2s delay');
 
 // ========== ENCRYPTION FUNCTION ==========
 function encryptPayload(payload) {
     try {
-        const key = CryptoJS.enc.Utf8.parse('12345678901234567890123456789012');
-        const iv = CryptoJS.enc.Utf8.parse('1234567890123456');
-        const jsonString = JSON.stringify(payload);
-        const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
-            iv: iv,
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-        });
+        const key = CryptoJS.enc.Utf8.parse(ENCRYPTION_KEY);
+        const iv = CryptoJS.enc.Utf8.parse(ENCRYPTION_IV);
+        const encrypted = CryptoJS.AES.encrypt(JSON.stringify(payload), key, { iv: iv });
         return encrypted.toString();
     } catch (e) {
-        console.error('Encryption error:', e);
         return '';
     }
 }
 
-// ========== STEP 1: VERIFY LINK ==========
-async function verifyLink(lifafaId, tParam) {
-    try {
-        // Visit the verification page first
-        const verifyUrl = `https://mahakalxlifafa.in/lifafa.php?i=${lifafaId}&t=${tParam}`;
-        
-        const response = await axios.get(verifyUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            timeout: 10000
-        });
-        
-        // Check if verification successful
-        if (response.data && response.data.includes('Claim your special gift')) {
-            return {
-                success: true,
-                message: 'Verification successful'
-            };
-        }
-        
-        return { success: false, error: 'Verification failed' };
-        
-    } catch (error) {
-        console.error('Verify error:', error.message);
-        return { success: false, error: error.message };
-    }
+// ========== UNIVERSAL LINK DETECTOR ==========
+function extractAllLinks(text) {
+    const urlRegex = /https?:\/\/[^\s]+/gi;
+    const matches = text.match(urlRegex);
+    
+    if (!matches || matches.length === 0) return [];
+    
+    const uniqueLinks = [...new Set(matches)];
+    
+    const lifafaLinks = uniqueLinks.filter(link => 
+        link.includes('lifafa') || link.includes('i=')
+    );
+    
+    return lifafaLinks.length > 0 ? lifafaLinks : uniqueLinks;
 }
 
-// ========== STEP 2: CLAIM AFTER VERIFICATION ==========
-async function claimAfterVerify(lifafaId, phoneNumber, tParam) {
-    try {
-        // First verify
-        const verifyResult = await verifyLink(lifafaId, tParam);
-        if (!verifyResult.success) {
-            return { success: false, error: 'Verification failed', step: 'verify' };
-        }
-        
-        // Then claim
-        const payload = {
-            action: "claimlifafa",
-            lid: lifafaId,
-            number: phoneNumber,
-            accessCode: "",
-            referid: "",
-            selected: ""
-        };
-        
-        const encryptedData = encryptPayload(payload);
-        
-        const formData = new URLSearchParams();
-        formData.append('data', encryptedData);
-        
-        const claimResponse = await axios.post('https://mahakalxlifafa.in/handler', formData, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 10000
-        });
-        
-        if (claimResponse.data && claimResponse.data.status === "success") {
-            const isSuccess = claimResponse.data.claim_status !== "tried";
-            const amount = isSuccess ? (claimResponse.data.perUser || 4) : 0;
-            
-            return {
-                success: isSuccess,
-                amount: amount,
-                message: claimResponse.data.message,
-                step: 'claim',
-                raw: claimResponse.data
-            };
-        }
-        
-        return { success: false, error: 'Claim failed', step: 'claim' };
-        
-    } catch (error) {
-        return { success: false, error: error.message, step: 'claim' };
-    }
+// ========== EXTRACT LIFAFA ID ==========
+function extractLifafaId(link) {
+    const match = link.match(/[?&]i=([^&]+)/);
+    return match ? match[1] : link.split('/').pop();
 }
 
 // ========== MAIN MENU ==========
 const mainMenu = {
     reply_markup: {
         keyboard: [
-            ['📤 Send Links', '📊 Status'],
-            ['📞 Set Phone', '🚀 Start Claim'],
-            ['📈 Stats', '🗑️ Clear']
+            ['📊 Status', '📞 Set Number'],
+            ['🚀 Claim All', '📈 Stats'],
+            ['🗑️ Clear All']
         ],
         resize_keyboard: true
     }
@@ -158,281 +123,348 @@ const mainMenu = {
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     
-    await User.findOneAndUpdate(
-        { chatId },
-        { username: msg.from.username },
-        { upsert: true }
-    );
-    
-    bot.sendMessage(chatId,
-        `🎁 *Lifafa Auto-Claim Bot*\n\n` +
-        `1️⃣ Send your lifafa links (with t parameter)\n` +
-        `2️⃣ Set your phone number\n` +
-        `3️⃣ Click Start Claim\n\n` +
-        `✅ Bot will verify first, then claim`,
-        { parse_mode: 'Markdown', ...mainMenu }
-    );
+    try {
+        let user = await User.findOne({ chatId });
+        if (!user) {
+            user = new User({ chatId });
+            await user.save();
+        }
+        
+        const totalLifafas = await Lifafa.countDocuments({ chatId });
+        
+        bot.sendMessage(chatId,
+            `🎯 *Universal Link Detector*\n\n` +
+            `✅ *How to use:*\n` +
+            `• Forward any post/message\n` +
+            `• Bot auto-detects all links\n` +
+            `• Supports any format\n\n` +
+            `📊 *Saved Links:* ${totalLifafas}\n\n` +
+            `👇 *Select option:*`,
+            { parse_mode: 'Markdown', ...mainMenu }
+        );
+    } catch (error) {
+        console.log('Start error:', error.message);
+        bot.sendMessage(chatId, '❌ Error occurred. Please try again.', mainMenu);
+    }
 });
 
-// ========== HANDLE MESSAGES ==========
+// ========== UNIVERSAL MESSAGE HANDLER ==========
 bot.on('message', async (msg) => {
-    if (!msg.text || msg.text.startsWith('/')) return;
+    if (!msg.text && !msg.caption) return;
     
     const chatId = msg.chat.id;
-    const text = msg.text;
+    const text = msg.text || msg.caption || '';
     
-    // Menu handlers
-    if (text === '📤 Send Links') {
-        bot.sendMessage(chatId, 'Send your lifafa.php links (with ?i= and &t=)');
-        return;
+    try {
+        // Handle menu buttons
+        if (text === '📊 Status') {
+            await showStatus(chatId);
+            return;
+        }
+        
+        if (text === '📞 Set Number') {
+            bot.sendMessage(chatId, 
+                `📞 *Send 10 digit phone number:*`,
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
+        
+        if (text === '🚀 Claim All') {
+            await startClaiming(chatId);
+            return;
+        }
+        
+        if (text === '📈 Stats') {
+            await showStats(chatId);
+            return;
+        }
+        
+        if (text === '🗑️ Clear All') {
+            const count = await Lifafa.countDocuments({ chatId });
+            await Lifafa.deleteMany({ chatId });
+            await User.findOneAndUpdate(
+                { chatId }, 
+                { stats: { totalLifafas: 0, totalSuccess: 0, totalFailed: 0, totalAmount: 0 } }
+            );
+            bot.sendMessage(chatId, `🗑️ Cleared ${count} links`, mainMenu);
+            return;
+        }
+        
+        // ===== UNIVERSAL LINK DETECTION =====
+        const detectedLinks = extractAllLinks(text);
+        
+        if (detectedLinks.length > 0) {
+            await saveDetectedLinks(chatId, detectedLinks);
+            return;
+        }
+        
+        // Check for phone number
+        if (/^\d{10}$/.test(text.trim())) {
+            await savePhoneNumber(chatId, text.trim());
+            return;
+        }
+    } catch (error) {
+        console.log('Message handler error:', error.message);
     }
-    
-    if (text === '📊 Status') {
-        await showStatus(chatId);
-        return;
-    }
-    
-    if (text === '📞 Set Phone') {
-        bot.sendMessage(chatId, 'Send your 10-digit phone number');
-        return;
-    }
-    
-    if (text === '🚀 Start Claim') {
-        await startClaimProcess(chatId);
-        return;
-    }
-    
-    if (text === '📈 Stats') {
-        await showStats(chatId);
-        return;
-    }
-    
-    if (text === '🗑️ Clear') {
-        await Link.deleteMany({ chatId });
-        await User.findOneAndUpdate({ chatId }, { links: [] });
-        bot.sendMessage(chatId, '🗑️ All cleared!', mainMenu);
-        return;
-    }
-    
-    // Phone number
-    if (/^\d{10}$/.test(text)) {
-        await User.findOneAndUpdate(
-            { chatId },
-            { phoneNumber: text },
-            { upsert: true }
-        );
-        bot.sendMessage(chatId, `✅ Phone saved: ${text}`, mainMenu);
-        return;
-    }
-    
-    // Save links (lifafa.php links)
-    if (text.includes('lifafa.php') && text.includes('i=') && text.includes('t=')) {
-        await saveLinkWithTParam(chatId, text);
-        return;
-    }
-    
-    bot.sendMessage(chatId, '❌ Invalid. Send lifafa.php link with i and t parameters');
 });
 
-// ========== SAVE LINK WITH T PARAMETER ==========
-async function saveLinkWithTParam(chatId, link) {
+// ========== SAVE DETECTED LINKS ==========
+async function saveDetectedLinks(chatId, links) {
     try {
-        // Extract i and t parameters
-        const iMatch = link.match(/[?&]i=([^&]+)/);
-        const tMatch = link.match(/[?&]t=([^&]+)/);
+        let saved = 0;
+        let duplicates = 0;
         
-        if (!iMatch || !tMatch) {
-            bot.sendMessage(chatId, '❌ Invalid link format. Need both i and t parameters');
-            return;
+        for (const link of links) {
+            const lifafaId = extractLifafaId(link);
+            
+            const exists = await Lifafa.findOne({ chatId, link: link });
+            if (!exists) {
+                const newLifafa = new Lifafa({
+                    chatId,
+                    link: link,
+                    lifafaId: lifafaId,
+                    status: 'pending'
+                });
+                await newLifafa.save();
+                saved++;
+            } else {
+                duplicates++;
+            }
         }
         
-        const lifafaId = iMatch[1];
-        const tParam = tMatch[1];
+        const total = await Lifafa.countDocuments({ chatId });
         
-        // Check duplicate
-        const exists = await Link.findOne({ chatId, lifafaId });
-        if (exists) {
-            bot.sendMessage(chatId, '⚠️ Link already exists');
-            return;
-        }
-        
-        // Save with t parameter
-        const newLink = new Link({
-            chatId,
-            link,
-            lifafaId,
-            tParam,
-            verified: false,
-            status: 'pending'
-        });
-        
-        await newLink.save();
-        
+        // Update user stats
         await User.findOneAndUpdate(
             { chatId },
-            { $push: { links: newLink._id } },
+            { 'stats.totalLifafas': total }
+        );
+        
+        // Short professional response
+        let response = `✅ *${saved} link(s) saved successfully*\n`;
+        response += `📊 Total: ${total}`;
+        
+        if (duplicates > 0) {
+            response += `\n⚠️ Duplicates: ${duplicates}`;
+        }
+        
+        bot.sendMessage(chatId, response, { parse_mode: 'Markdown', ...mainMenu });
+        
+    } catch (error) {
+        console.log('Save error:', error.message);
+        bot.sendMessage(chatId, '❌ Error saving links', mainMenu);
+    }
+}
+
+// ========== SAVE PHONE NUMBER ==========
+async function savePhoneNumber(chatId, number) {
+    try {
+        await User.findOneAndUpdate(
+            { chatId },
+            { 
+                phoneNumbers: [number], 
+                currentPhone: number 
+            },
             { upsert: true }
         );
         
-        const total = await Link.countDocuments({ chatId });
+        const total = await Lifafa.countDocuments({ chatId });
         bot.sendMessage(chatId, 
-            `✅ Saved: ${lifafaId}\n` +
-            `📊 Total: ${total}\n` +
-            `🔑 t: ${tParam}`,
-            mainMenu
+            `✅ *Phone number updated*\n📞 ${number}\n📊 Links: ${total}`,
+            { parse_mode: 'Markdown', ...mainMenu }
         );
-        
     } catch (error) {
-        bot.sendMessage(chatId, '❌ Error saving link');
+        console.log('Save phone error:', error.message);
+        bot.sendMessage(chatId, '❌ Error saving number', mainMenu);
     }
 }
 
 // ========== SHOW STATUS ==========
 async function showStatus(chatId) {
-    const links = await Link.find({ chatId });
-    const user = await User.findOne({ chatId });
-    
-    if (links.length === 0) {
-        bot.sendMessage(chatId, '📊 No links', mainMenu);
-        return;
+    try {
+        const lifafas = await Lifafa.find({ chatId }).sort({ createdAt: -1 });
+        const user = await User.findOne({ chatId });
+        
+        const pending = lifafas.filter(l => l.status === 'pending').length;
+        const success = lifafas.filter(l => l.status === 'success').length;
+        const failed = lifafas.filter(l => l.status === 'failed').length;
+        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
+        
+        let recentText = '';
+        if (lifafas.length > 0) {
+            recentText = '\n📌 *Recent:*\n';
+            lifafas.slice(0, 3).forEach(l => {
+                const emoji = l.status === 'success' ? '✅' : l.status === 'failed' ? '❌' : '⏳';
+                recentText += `${emoji} \`${l.lifafaId}\` ${l.amount > 0 ? '₹'+l.amount : ''}\n`;
+            });
+        }
+        
+        bot.sendMessage(chatId,
+            `📊 *Status*\n\n` +
+            `Total: ${lifafas.length}\n` +
+            `Pending: ${pending}\n` +
+            `Success: ${success}\n` +
+            `Failed: ${failed}\n` +
+            `Amount: ₹${totalAmount}\n` +
+            `Phone: ${user?.currentPhone || 'Not set'}` +
+            recentText,
+            { parse_mode: 'Markdown', ...mainMenu }
+        );
+    } catch (error) {
+        console.log('Show status error:', error.message);
     }
-    
-    const pending = links.filter(l => l.status === 'pending').length;
-    const claimed = links.filter(l => l.status === 'claimed').length;
-    const failed = links.filter(l => l.status === 'failed').length;
-    const verified = links.filter(l => l.verified).length;
-    const totalAmount = links.reduce((sum, l) => sum + (l.amount || 0), 0);
-    
-    bot.sendMessage(chatId,
-        `📊 *Status*\n\n` +
-        `Total: ${links.length}\n` +
-        `✅ Verified: ${verified}\n` +
-        `⏳ Pending: ${pending}\n` +
-        `✅ Claimed: ${claimed}\n` +
-        `❌ Failed: ${failed}\n` +
-        `💰 Amount: ₹${totalAmount}\n` +
-        `📞 Phone: ${user?.phoneNumber || 'Not set'}`,
-        { parse_mode: 'Markdown', ...mainMenu }
-    );
 }
 
 // ========== SHOW STATS ==========
 async function showStats(chatId) {
-    const links = await Link.find({ chatId });
-    
-    const claimed = links.filter(l => l.status === 'claimed').length;
-    const totalAmount = links.reduce((sum, l) => sum + (l.amount || 0), 0);
-    
-    bot.sendMessage(chatId,
-        `📈 *Stats*\n\n` +
-        `Claimed: ${claimed}\n` +
-        `Amount: ₹${totalAmount}`,
-        { parse_mode: 'Markdown', ...mainMenu }
-    );
+    try {
+        const lifafas = await Lifafa.find({ chatId });
+        
+        const success = lifafas.filter(l => l.status === 'success').length;
+        const failed = lifafas.filter(l => l.status === 'failed').length;
+        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
+        
+        const successRate = lifafas.length > 0 ? 
+            Math.round((success / lifafas.length) * 100) : 0;
+        
+        bot.sendMessage(chatId,
+            `📈 *Statistics*\n\n` +
+            `Total: ${lifafas.length}\n` +
+            `Success: ${success}\n` +
+            `Failed: ${failed}\n` +
+            `Amount: ₹${totalAmount}\n` +
+            `Rate: ${successRate}%`,
+            { parse_mode: 'Markdown', ...mainMenu }
+        );
+    } catch (error) {
+        console.log('Show stats error:', error.message);
+    }
 }
 
-// ========== START CLAIM PROCESS ==========
-async function startClaimProcess(chatId) {
-    const user = await User.findOne({ chatId });
-    
-    if (!user?.phoneNumber) {
-        bot.sendMessage(chatId, '❌ Set phone number first', mainMenu);
-        return;
-    }
-    
-    const links = await Link.find({ 
-        chatId, 
-        status: 'pending' 
-    });
-    
-    if (links.length === 0) {
-        bot.sendMessage(chatId, '❌ No pending links', mainMenu);
-        return;
-    }
-    
-    await User.findOneAndUpdate(
-        { chatId },
-        {
-            'claimSession.active': true,
-            'claimSession.currentIndex': 0
+// ========== CLAIM FUNCTION ==========
+async function claimLifafa(lifafaId, phoneNumber) {
+    try {
+        const payload = {
+            action: "claimlifafa",
+            lid: lifafaId,
+            number: phoneNumber,
+            accessCode: "",
+            referid: "",
+            selected: ""
+        };
+        
+        const encrypted = encryptPayload(payload);
+        const formData = new URLSearchParams();
+        formData.append('data', encrypted);
+        
+        const response = await axios.post('https://mahakalxlifafa.in/handler', formData, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 15000 // 15 second timeout
+        });
+        
+        if (response.data?.status === "success") {
+            const isSuccess = response.data.claim_status !== "tried";
+            return {
+                success: isSuccess,
+                amount: isSuccess ? (response.data.perUser || 4) : 0
+            };
         }
-    );
-    
-    bot.sendMessage(chatId, `🚀 Starting claim for ${links.length} links...`);
-    processLinkWithVerify(chatId, 0);
+        return { success: false, amount: 0 };
+    } catch (error) {
+        console.log('Claim error:', error.message);
+        return { success: false, amount: 0 };
+    }
 }
 
-// ========== PROCESS LINK WITH VERIFY FIRST ==========
-async function processLinkWithVerify(chatId, index) {
-    const user = await User.findOne({ chatId });
-    if (!user?.claimSession?.active) return;
-    
-    const links = await Link.find({ chatId, status: 'pending' });
-    
-    if (index >= links.length) {
-        await User.findOneAndUpdate({ chatId }, { 'claimSession.active': false });
-        bot.sendMessage(chatId, '✅ All done!', mainMenu);
-        return;
+// ========== START CLAIMING ==========
+async function startClaiming(chatId) {
+    try {
+        const user = await User.findOne({ chatId });
+        const lifafas = await Lifafa.find({ chatId, status: 'pending' });
+        
+        if (!user?.currentPhone) {
+            bot.sendMessage(chatId, '❌ *Set phone number first*', mainMenu);
+            return;
+        }
+        
+        if (lifafas.length === 0) {
+            bot.sendMessage(chatId, '❌ *No pending links*', mainMenu);
+            return;
+        }
+        
+        // Initial message
+        bot.sendMessage(chatId, `⏳ *Claiming ${lifafas.length} lifafas...*\nPlease wait`, { parse_mode: 'Markdown' });
+        
+        let success = 0;
+        let failed = 0;
+        let totalAmount = 0;
+        
+        for (let i = 0; i < lifafas.length; i++) {
+            const lifafa = lifafas[i];
+            
+            // Process message
+            bot.sendMessage(chatId, `🔄 Processing: ${i+1}/${lifafas.length} - ID: \`${lifafa.lifafaId}\``, { parse_mode: 'Markdown' });
+            
+            const result = await claimLifafa(lifafa.lifafaId, user.currentPhone);
+            
+            if (result.success) {
+                success++;
+                totalAmount += result.amount;
+                lifafa.status = 'success';
+                lifafa.amount = result.amount;
+                bot.sendMessage(chatId, `✅ Selected: ₹${result.amount}`);
+            } else {
+                failed++;
+                lifafa.status = 'failed';
+                bot.sendMessage(chatId, `❌ Not selected`);
+            }
+            
+            await lifafa.save();
+            
+            // Update stats
+            await User.findOneAndUpdate(
+                { chatId },
+                {
+                    stats: {
+                        totalLifafas: lifafas.length,
+                        totalSuccess: success,
+                        totalFailed: failed,
+                        totalAmount: totalAmount
+                    }
+                }
+            );
+            
+            // 2 SECONDS DELAY (changed from 15 to 2)
+            if (i < lifafas.length - 1) {
+                bot.sendMessage(chatId, '⏱️ Waiting 2 seconds...');
+                await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
+            }
+        }
+        
+        // Final summary
+        bot.sendMessage(chatId,
+            `✅ *All claimed successfully*\n\n` +
+            `📊 Total: ${lifafas.length}\n` +
+            `✅ Selected: ${success}\n` +
+            `❌ Not selected: ${failed}\n` +
+            `💰 Total amount: ₹${totalAmount}`,
+            { parse_mode: 'Markdown', ...mainMenu }
+        );
+    } catch (error) {
+        console.log('Claiming error:', error.message);
+        bot.sendMessage(chatId, '❌ Error during claiming process', mainMenu);
     }
-    
-    const link = links[index];
-    
-    bot.sendMessage(chatId, 
-        `🔄 *${index+1}/${links.length}*\n` +
-        `ID: ${link.lifafaId}\n` +
-        `Step 1: Verifying...`,
-        { parse_mode: 'Markdown' }
-    );
-    
-    // STEP 1: First verify using t parameter
-    const verifyResult = await verifyLink(link.lifafaId, link.tParam);
-    
-    if (!verifyResult.success) {
-        link.status = 'failed';
-        link.error = 'Verification failed';
-        await link.save();
-        
-        bot.sendMessage(chatId, `❌ Verification failed: ${verifyResult.error}`);
-        
-        setTimeout(() => processLinkWithVerify(chatId, index + 1), 30000);
-        return;
-    }
-    
-    // Mark as verified
-    link.verified = true;
-    await link.save();
-    
-    bot.sendMessage(chatId, `✅ Verified! Now claiming...`);
-    
-    // STEP 2: Now claim
-    const claimResult = await claimAfterVerify(link.lifafaId, user.phoneNumber, link.tParam);
-    
-    if (claimResult.success) {
-        link.status = 'claimed';
-        link.amount = claimResult.amount;
-        await link.save();
-        
-        bot.sendMessage(chatId, `✅ Claimed: ₹${claimResult.amount}`);
-        
-    } else {
-        link.status = 'failed';
-        link.error = claimResult.error;
-        await link.save();
-        
-        bot.sendMessage(chatId, `❌ Claim failed: ${claimResult.error}`);
-    }
-    
-    // Next after 30 seconds
-    setTimeout(() => processLinkWithVerify(chatId, index + 1), 30000);
 }
 
-// ========== WEB SERVER ==========
-app.get('/', (req, res) => {
-    res.send('🤖 Lifafa Bot Running');
+// ========== ERROR HANDLER ==========
+bot.on('polling_error', (error) => {
+    console.log('Polling error:', error.message);
 });
 
-app.listen(PORT, () => {
-    console.log(`✅ Server on port ${PORT}`);
+bot.on('webhook_error', (error) => {
+    console.log('Webhook error:', error.message);
 });
 
-console.log('🤖 Bot Started - Verification + Claim Active!');
+console.log('✅ Bot Ready - Forward any post!');
+console.log('⏱️ Delay set to 2 seconds between claims');
