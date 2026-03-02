@@ -260,11 +260,6 @@ async function saveDetectedLinks(chatId, links) {
 // ========== SAVE PHONE NUMBER ==========
 async function savePhoneNumber(chatId, number) {
     try {
-        // Check if number is different from current
-        const user = await User.findOne({ chatId });
-        const isNewNumber = !user?.currentPhone || user.currentPhone !== number;
-        
-        // Update user with new number
         await User.findOneAndUpdate(
             { chatId },
             { 
@@ -274,27 +269,9 @@ async function savePhoneNumber(chatId, number) {
             { upsert: true }
         );
         
-        let resetMessage = '';
-        
-        // If it's a new number, reset ALL links to pending
-        if (isNewNumber) {
-            const result = await Lifafa.updateMany(
-                { chatId },
-                { status: 'pending' }  // Reset all links to pending
-            );
-            
-            if (result.modifiedCount > 0) {
-                resetMessage = `\n🔄 Reset ${result.modifiedCount} links for new number`;
-            }
-        }
-        
         const total = await Lifafa.countDocuments({ chatId });
-        const pending = await Lifafa.countDocuments({ chatId, status: 'pending' });
-        
         bot.sendMessage(chatId, 
-            `✅ *Phone number updated*\n📞 ${number}\n\n` +
-            `📊 Total links: ${total}\n` +
-            `⏳ Ready to claim: ${pending}${resetMessage}`,
+            `✅ *Phone number updated*\n📞 ${number}\n📊 Links: ${total}`,
             { parse_mode: 'Markdown', ...mainMenu }
         );
     } catch (error) {
@@ -312,14 +289,13 @@ async function showStatus(chatId) {
         const pending = lifafas.filter(l => l.status === 'pending').length;
         const success = lifafas.filter(l => l.status === 'success').length;
         const failed = lifafas.filter(l => l.status === 'failed').length;
-        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
         
         let recentText = '';
         if (lifafas.length > 0) {
             recentText = '\n📌 *Recent:*\n';
             lifafas.slice(0, 3).forEach(l => {
                 const emoji = l.status === 'success' ? '✅' : l.status === 'failed' ? '❌' : '⏳';
-                recentText += `${emoji} \`${l.lifafaId}\` ${l.amount > 0 ? '₹'+l.amount : ''}\n`;
+                recentText += `${emoji} \`${l.lifafaId}\`\n`;
             });
         }
         
@@ -329,7 +305,6 @@ async function showStatus(chatId) {
             `Pending: ${pending}\n` +
             `Success: ${success}\n` +
             `Failed: ${failed}\n` +
-            `Amount: ₹${totalAmount}\n` +
             `Phone: ${user?.currentPhone || 'Not set'}` +
             recentText,
             { parse_mode: 'Markdown', ...mainMenu }
@@ -346,7 +321,6 @@ async function showStats(chatId) {
         
         const success = lifafas.filter(l => l.status === 'success').length;
         const failed = lifafas.filter(l => l.status === 'failed').length;
-        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
         
         const successRate = lifafas.length > 0 ? 
             Math.round((success / lifafas.length) * 100) : 0;
@@ -356,7 +330,6 @@ async function showStats(chatId) {
             `Total: ${lifafas.length}\n` +
             `Success: ${success}\n` +
             `Failed: ${failed}\n` +
-            `Amount: ₹${totalAmount}\n` +
             `Rate: ${successRate}%`,
             { parse_mode: 'Markdown', ...mainMenu }
         );
@@ -383,30 +356,19 @@ async function claimLifafa(lifafaId, phoneNumber) {
         
         const response = await axios.post('https://mahakalxlifafa.in/handler', formData, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 15000
+            timeout: 15000 // 15 second timeout
         });
         
-        // Response check
         if (response.data?.status === "success") {
             const isSuccess = response.data.claim_status !== "tried";
-            
-            // Exact amount jo API ne diya
-            let amount = 0;
-            if (isSuccess) {
-                // perUser field mein amount hota hai
-                amount = response.data.perUser || 0;
-                console.log(`💰 Amount received: ₹${amount} for ${lifafaId}`);
-            }
-            
             return {
                 success: isSuccess,
-                amount: amount  // Exact API amount
+                amount: isSuccess ? (response.data.perUser || 4) : 0
             };
         }
-        
         return { success: false, amount: 0 };
     } catch (error) {
-        console.log('Claim error for', lifafaId, ':', error.message);
+        console.log('Claim error:', error.message);
         return { success: false, amount: 0 };
     }
 }
@@ -415,7 +377,10 @@ async function claimLifafa(lifafaId, phoneNumber) {
 async function startClaiming(chatId) {
     try {
         const user = await User.findOne({ chatId });
-        const lifafas = await Lifafa.find({ chatId, status: 'pending' });
+        
+        // Get ALL lifafas (pending, success, failed - all of them)
+        // This way you can claim again with new number without clearing
+        const lifafas = await Lifafa.find({ chatId });
         
         if (!user?.currentPhone) {
             bot.sendMessage(chatId, '❌ *Set phone number first*', mainMenu);
@@ -423,52 +388,38 @@ async function startClaiming(chatId) {
         }
         
         if (lifafas.length === 0) {
-            bot.sendMessage(chatId, '❌ *No pending links*', mainMenu);
+            bot.sendMessage(chatId, '❌ *No links saved*', mainMenu);
             return;
         }
         
-        // Initial message that will be updated
-        let statusMsg = await bot.sendMessage(chatId, 
-            `⏳ *Claiming ${lifafas.length} lifafas...*\n\n` +
-            `━━━━━━━━━━━━━━━`, 
-            { parse_mode: 'Markdown' }
-        );
+        // Initial message
+        bot.sendMessage(chatId, `⏳ *Claiming ${lifafas.length} lifafas with new number...*\nPlease wait`, { parse_mode: 'Markdown' });
         
         let success = 0;
         let failed = 0;
-        let totalAmount = 0;
-        let resultText = '';
         
         for (let i = 0; i < lifafas.length; i++) {
             const lifafa = lifafas[i];
+            
+            // Process message
+            bot.sendMessage(chatId, `🔄 Processing: ${i+1}/${lifafas.length} - ID: \`${lifafa.lifafaId}\``, { parse_mode: 'Markdown' });
             
             const result = await claimLifafa(lifafa.lifafaId, user.currentPhone);
             
             if (result.success) {
                 success++;
-                totalAmount += result.amount;
                 lifafa.status = 'success';
                 lifafa.amount = result.amount;
-                resultText += `#${i+1}: \`${lifafa.lifafaId}\` - ✅ Selected (₹${result.amount})\n`;
+                lifafa.claimedAt = new Date();
+                bot.sendMessage(chatId, `✅ Selected`);
             } else {
                 failed++;
                 lifafa.status = 'failed';
-                resultText += `#${i+1}: \`${lifafa.lifafaId}\` - ❌ Not selected\n`;
+                lifafa.claimedAt = new Date();
+                bot.sendMessage(chatId, `❌ Not selected`);
             }
             
             await lifafa.save();
-            
-            // Update status message
-            await bot.editMessageText(
-                `⏳ *Claiming ${lifafas.length} lifafas...*\n\n` +
-                `${resultText}\n` +
-                `━━━━━━━━━━━━━━━`,
-                {
-                    chat_id: chatId,
-                    message_id: statusMsg.message_id,
-                    parse_mode: 'Markdown'
-                }
-            );
             
             // Update stats
             await User.findOneAndUpdate(
@@ -478,46 +429,27 @@ async function startClaiming(chatId) {
                         totalLifafas: lifafas.length,
                         totalSuccess: success,
                         totalFailed: failed,
-                        totalAmount: totalAmount
+                        totalAmount: 0 // Amount tracking removed
                     }
                 }
             );
             
             // 2 SECONDS DELAY
             if (i < lifafas.length - 1) {
-                // Update waiting message
-                await bot.editMessageText(
-                    `⏳ *Claiming ${lifafas.length} lifafas...*\n\n` +
-                    `${resultText}\n` +
-                    `━━━━━━━━━━━━━━━\n` +
-                    `⏱️ Waiting 2 seconds...`,
-                    {
-                        chat_id: chatId,
-                        message_id: statusMsg.message_id,
-                        parse_mode: 'Markdown'
-                    }
-                );
+                bot.sendMessage(chatId, '⏱️ Waiting 2 seconds...');
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
         
-        // Final summary - update the same message
-        await bot.editMessageText(
-            `✅ *Claiming Complete!*\n\n` +
-            `${resultText}\n` +
-            `━━━━━━━━━━━━━━━\n` +
-            `📊 *Summary:*\n` +
-            `Total: ${lifafas.length}\n` +
+        // Final summary - amount removed
+        bot.sendMessage(chatId,
+            `✅ *All claimed successfully*\n\n` +
+            `📊 Total: ${lifafas.length}\n` +
             `✅ Selected: ${success}\n` +
-            `❌ Not selected: ${failed}\n` +
-            `💰 Total amount: ₹${totalAmount}`,
-            {
-                chat_id: chatId,
-                message_id: statusMsg.message_id,
-                parse_mode: 'Markdown',
-                ...mainMenu
-            }
+            `❌ Not selected: ${failed}`,
+            { parse_mode: 'Markdown', ...mainMenu }
         );
+        
     } catch (error) {
         console.log('Claiming error:', error.message);
         bot.sendMessage(chatId, '❌ Error during claiming process', mainMenu);
@@ -535,3 +467,5 @@ bot.on('webhook_error', (error) => {
 
 console.log('✅ Bot Ready - Forward any post!');
 console.log('⏱️ Delay set to 2 seconds between claims');
+console.log('💰 Amount display removed - only ✅ Selected shown');
+console.log('🔄 Links persist - just update number and claim again');
