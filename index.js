@@ -294,7 +294,7 @@ async function showStatus(chatId) {
             recentText = '\n📌 *Recent:*\n';
             lifafas.slice(0, 3).forEach(l => {
                 const emoji = l.status === 'success' ? '✅' : l.status === 'failed' ? '❌' : '⏳';
-                recentText += `${emoji} \`${l.lifafaId}\` ${l.amount > 0 ? '₹'+l.amount : ''}\n`;
+                recentText += `${emoji} \`${l.lifafaId}\`\n`;
             });
         }
         
@@ -304,7 +304,6 @@ async function showStatus(chatId) {
             `Pending: ${pending}\n` +
             `Success: ${success}\n` +
             `Failed: ${failed}\n` +
-            `Amount: ₹${totalAmount}\n` +
             `Phone: ${user?.currentPhone || 'Not set'}` +
             recentText,
             { parse_mode: 'Markdown', ...mainMenu }
@@ -321,7 +320,6 @@ async function showStats(chatId) {
         
         const success = lifafas.filter(l => l.status === 'success').length;
         const failed = lifafas.filter(l => l.status === 'failed').length;
-        const totalAmount = lifafas.reduce((sum, l) => sum + (l.amount || 0), 0);
         
         const successRate = lifafas.length > 0 ? 
             Math.round((success / lifafas.length) * 100) : 0;
@@ -331,7 +329,6 @@ async function showStats(chatId) {
             `Total: ${lifafas.length}\n` +
             `Success: ${success}\n` +
             `Failed: ${failed}\n` +
-            `Amount: ₹${totalAmount}\n` +
             `Rate: ${successRate}%`,
             { parse_mode: 'Markdown', ...mainMenu }
         );
@@ -340,7 +337,7 @@ async function showStats(chatId) {
     }
 }
 
-// ========== CLAIM FUNCTION - EXACT AMOUNT ==========
+// ========== CLAIM FUNCTION - NO AMOUNT ==========
 async function claimLifafa(lifafaId, phoneNumber) {
     try {
         const payload = {
@@ -363,43 +360,19 @@ async function claimLifafa(lifafaId, phoneNumber) {
         
         if (response.data?.status === "success") {
             const isSuccess = response.data.claim_status === "success";
-            let amount = 0;
-            
-            // Extract EXACT amount from response - no defaults
-            if (isSuccess) {
-                // Try all possible amount fields from API
-                if (response.data.perUser !== undefined && response.data.perUser !== null) {
-                    amount = response.data.perUser;
-                } else if (response.data.amount !== undefined && response.data.amount !== null) {
-                    amount = response.data.amount;
-                } else if (response.data.winning !== undefined && response.data.winning !== null) {
-                    amount = response.data.winning;
-                } else if (response.data.price !== undefined && response.data.price !== null) {
-                    amount = response.data.price;
-                } else if (response.data.value !== undefined && response.data.value !== null) {
-                    amount = response.data.value;
-                } else if (response.data.reward !== undefined && response.data.reward !== null) {
-                    amount = response.data.reward;
-                }
-                
-                // Log actual amount for debugging
-                console.log(`💰 Lifafa ${lifafaId} claimed: ₹${amount}`);
-            }
-            
             return {
                 success: isSuccess,
-                amount: amount, // Will be 0 if not successful or no amount field
-                message: response.data.msg || ''
+                amount: 0 // Amount always 0
             };
         }
-        return { success: false, amount: 0, message: '' };
+        return { success: false, amount: 0 };
     } catch (error) {
         console.log('Claim error:', error.message);
-        return { success: false, amount: 0, message: '' };
+        return { success: false, amount: 0 };
     }
 }
 
-// ========== START CLAIMING - FIXED ==========
+// ========== START CLAIMING - SINGLE MESSAGE UPDATES ==========
 async function startClaiming(chatId) {
     try {
         const user = await User.findOne({ chatId });
@@ -418,18 +391,19 @@ async function startClaiming(chatId) {
         // Send initial message
         const initialMsg = await bot.sendMessage(chatId, 
             `🚀 *Starting Claim Process*\n\n` +
+            `━━━━━━━━━━━━━━━\n` +
             `📊 Total: ${lifafas.length}\n` +
-            `📞 Phone: ${user.currentPhone}\n\n` +
+            `📞 Phone: ${user.currentPhone}\n` +
+            `━━━━━━━━━━━━━━━\n\n` +
             `⏳ Processing: 0/${lifafas.length}\n` +
             `✅ Selected: 0\n` +
-            `❌ Failed: 0\n` +
-            `💰 Amount: ₹0`,
+            `❌ Not Selected: 0\n\n` +
+            `⏱️ Next update in 2 seconds...`,
             { parse_mode: 'Markdown' }
         );
         
         let success = 0;
         let failed = 0;
-        let totalAmount = 0;
         let lastUpdateTime = Date.now();
         
         for (let i = 0; i < lifafas.length; i++) {
@@ -440,15 +414,10 @@ async function startClaiming(chatId) {
             
             if (result.success) {
                 success++;
-                totalAmount += result.amount;
                 lifafa.status = 'success';
-                lifafa.amount = result.amount;
-                console.log(`✅ Lifafa ${lifafa.lifafaId}: ₹${result.amount}`);
             } else {
                 failed++;
                 lifafa.status = 'failed';
-                lifafa.amount = 0;
-                console.log(`❌ Lifafa ${lifafa.lifafaId}: Failed`);
             }
             
             await lifafa.save();
@@ -458,23 +427,23 @@ async function startClaiming(chatId) {
                 { chatId },
                 {
                     'stats.totalSuccess': success,
-                    'stats.totalFailed': failed,
-                    'stats.totalAmount': totalAmount
+                    'stats.totalFailed': failed
                 }
             );
             
-            // Update the message periodically
-            if (i % 3 === 0 || Date.now() - lastUpdateTime > 5000 || i === lifafas.length - 1) {
+            // Update the main message (every 3 items or at the end)
+            if (i % 3 === 0 || i === lifafas.length - 1) {
                 try {
                     await bot.editMessageText(
                         `🚀 *Claiming...*\n\n` +
+                        `━━━━━━━━━━━━━━━\n` +
                         `📊 Total: ${lifafas.length}\n` +
-                        `📞 Phone: ${user.currentPhone}\n\n` +
+                        `📞 Phone: ${user.currentPhone}\n` +
+                        `━━━━━━━━━━━━━━━\n\n` +
                         `⏳ Processing: ${i + 1}/${lifafas.length}\n` +
                         `✅ Selected: ${success}\n` +
-                        `❌ Failed: ${failed}\n` +
-                        `💰 Amount: ₹${totalAmount}\n\n` +
-                        `⏱️ Next in 2 seconds...`,
+                        `❌ Not Selected: ${failed}\n\n` +
+                        `⏱️ ${i < lifafas.length - 1 ? 'Next in 2 seconds...' : 'Finishing up...'}`,
                         {
                             chat_id: chatId,
                             message_id: initialMsg.message_id,
@@ -493,18 +462,16 @@ async function startClaiming(chatId) {
             }
         }
         
-        // Final success message with exact amounts
+        // Final success message
         await bot.editMessageText(
             `✅ *Claiming Complete!*\n\n` +
-            `📊 *Final Summary:*\n` +
             `━━━━━━━━━━━━━━━\n` +
-            `📌 Total Links: ${lifafas.length}\n` +
+            `📊 Total Links: ${lifafas.length}\n` +
             `✅ Selected: ${success}\n` +
-            `❌ Failed: ${failed}\n` +
-            `💰 Total Amount: ₹${totalAmount}\n` +
+            `❌ Not Selected: ${failed}\n` +
             `📞 Phone: ${user.currentPhone}\n` +
             `━━━━━━━━━━━━━━━\n\n` +
-            `🎉 Check /status for details`,
+            `🎉 All done! Check /status for details`,
             {
                 chat_id: chatId,
                 message_id: initialMsg.message_id,
@@ -528,6 +495,6 @@ bot.on('webhook_error', (error) => {
     console.log('Webhook error:', error.message);
 });
 
-console.log('✅ Bot Ready - No default amounts!');
-console.log('⏱️ Delay set to 2 seconds between claims');
-console.log('💰 Exact amounts from API only');
+console.log('✅ Bot Ready - No Spam!');
+console.log('⏱️ Single message updates');
+console.log('💰 Amount removed from all messages');
