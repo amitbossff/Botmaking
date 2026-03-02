@@ -6,7 +6,7 @@ const axios = require('axios');
 const express = require('express');
 
 // ========== CONFIGURATION ==========
-const TELEGRAM_TOKEN = '8603310729:AAFPtxjvuhTxhWWeHO70ApwyzLsmQVmZ2IM';
+const TELEGRAM_TOKEN = '8237728017:AAFCSh-ETOJ4VspQVvazB7FLm_i55bX9x5U';
 const MONGODB_URI = 'mongodb+srv://amittgofficial_db_user:Amit70615544@cluster0.vqfljne.mongodb.net/lifafa-bot?retryWrites=true&w=majority';
 const ENCRYPTION_KEY = '12345678901234567890123456789012';
 const ENCRYPTION_IV = '1234567890123456';
@@ -260,6 +260,11 @@ async function saveDetectedLinks(chatId, links) {
 // ========== SAVE PHONE NUMBER ==========
 async function savePhoneNumber(chatId, number) {
     try {
+        // Check if number is different from current
+        const user = await User.findOne({ chatId });
+        const isNewNumber = !user?.currentPhone || user.currentPhone !== number;
+        
+        // Update user with new number
         await User.findOneAndUpdate(
             { chatId },
             { 
@@ -269,9 +274,27 @@ async function savePhoneNumber(chatId, number) {
             { upsert: true }
         );
         
+        let resetMessage = '';
+        
+        // If it's a new number, reset ALL links to pending
+        if (isNewNumber) {
+            const result = await Lifafa.updateMany(
+                { chatId },
+                { status: 'pending' }  // Reset all links to pending
+            );
+            
+            if (result.modifiedCount > 0) {
+                resetMessage = `\n🔄 Reset ${result.modifiedCount} links for new number`;
+            }
+        }
+        
         const total = await Lifafa.countDocuments({ chatId });
+        const pending = await Lifafa.countDocuments({ chatId, status: 'pending' });
+        
         bot.sendMessage(chatId, 
-            `✅ *Phone number updated*\n📞 ${number}\n📊 Links: ${total}`,
+            `✅ *Phone number updated*\n📞 ${number}\n\n` +
+            `📊 Total links: ${total}\n` +
+            `⏳ Ready to claim: ${pending}${resetMessage}`,
             { parse_mode: 'Markdown', ...mainMenu }
         );
     } catch (error) {
@@ -360,19 +383,30 @@ async function claimLifafa(lifafaId, phoneNumber) {
         
         const response = await axios.post('https://mahakalxlifafa.in/handler', formData, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 15000 // 15 second timeout
+            timeout: 15000
         });
         
+        // Response check
         if (response.data?.status === "success") {
             const isSuccess = response.data.claim_status !== "tried";
+            
+            // Exact amount jo API ne diya
+            let amount = 0;
+            if (isSuccess) {
+                // perUser field mein amount hota hai
+                amount = response.data.perUser || 0;
+                console.log(`💰 Amount received: ₹${amount} for ${lifafaId}`);
+            }
+            
             return {
                 success: isSuccess,
-                amount: isSuccess ? (response.data.perUser || 4) : 0
+                amount: amount  // Exact API amount
             };
         }
+        
         return { success: false, amount: 0 };
     } catch (error) {
-        console.log('Claim error:', error.message);
+        console.log('Claim error for', lifafaId, ':', error.message);
         return { success: false, amount: 0 };
     }
 }
